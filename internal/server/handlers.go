@@ -51,7 +51,7 @@ func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.manager.Register(source); err != nil {
+	if err := s.manager.Register(source, cfg); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
