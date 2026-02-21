@@ -12,5 +12,5 @@ FROM gcr.io/distroless/static-debian12
 
 COPY --from=builder /nephtys /nephtys
 
-EXPOSE 3000
+EXPOSE 3002
 ENTRYPOINT ["/nephtys"]

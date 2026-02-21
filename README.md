@@ -49,14 +49,15 @@ make run
 
 ```bash
 make run
-# REST API on :3000, connected to NATS on :4222
+# REST API on :3002, connected to NATS on :4222
 ```
 
 ### Register a stream dynamically
 
 ```bash
-curl -X POST http://localhost:3000/v1/streams \
+curl -X POST http://localhost:3002/v1/streams \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-token>" \
   -d '{
     "id": "binance_btc",
     "kind": "websocket",
@@ -68,19 +69,19 @@ curl -X POST http://localhost:3000/v1/streams \
 ### List active streams
 
 ```bash
-curl http://localhost:3000/v1/streams
+curl http://localhost:3002/v1/streams
 ```
 
 ### Remove a stream
 
 ```bash
-curl -X DELETE http://localhost:3000/v1/streams/binance_btc
+curl -X DELETE http://localhost:3002/v1/streams/binance_btc
 ```
 
 ### Health check
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:3002/health
 ```
 
 ## REST API
@@ -97,7 +98,8 @@ curl http://localhost:3000/health
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NATS_URL` | `nats://localhost:4222` | NATS broker URL |
-| `NEPHTYS_PORT` | `3000` | REST API port |
+| `NEPHTYS_PORT` | `3002` | REST API port |
+| `NEPHTYS_ADMIN_TOKEN` | — | Bearer token for API auth (optional) |
 | `NEPHTYS_LOG_LEVEL` | `info` | Log level |
 
 ## Supported Connectors

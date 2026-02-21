@@ -21,7 +21,9 @@ type Server struct {
 }
 
 // New creates a new HTTP server wired to the given stream manager and broker.
-func New(port string, manager *StreamManager, brk *broker.Broker) *Server {
+// If adminToken is non-empty, all endpoints except /health require a valid
+// Bearer token in the Authorization header.
+func New(port string, manager *StreamManager, brk *broker.Broker, adminToken string) *Server {
 	s := &Server{
 		manager: manager,
 		broker:  brk,
@@ -31,9 +33,12 @@ func New(port string, manager *StreamManager, brk *broker.Broker) *Server {
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
+	var handler http.Handler = mux
+	handler = bearerAuth(adminToken, map[string]bool{"/health": true})(handler)
+
 	s.httpServer = &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
