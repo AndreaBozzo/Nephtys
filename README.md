@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="docs/assets/logo.png" alt="Nephtys Logo" width="800" height="auto"/>
   <h1>Nephtys</h1>
   <p><strong>Real-time data stream connector for the data economy</strong></p>
 </div>
