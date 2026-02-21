@@ -28,24 +28,6 @@ func (m *mockSource) Stop()                       { m.stopped = true; m.status =
 func (m *mockSource) ID() string                  { return m.id }
 func (m *mockSource) Status() domain.SourceStatus { return m.status }
 
-// mockBroker records publishes for verification.
-type mockBroker struct {
-	published []publishedEvent
-}
-
-type publishedEvent struct {
-	Topic string
-	Event domain.StreamEvent
-}
-
-func (b *mockBroker) Publish(topic string, event domain.StreamEvent) error {
-	b.published = append(b.published, publishedEvent{Topic: topic, Event: event})
-	return nil
-}
-
-func (b *mockBroker) IsConnected() bool { return true }
-func (b *mockBroker) Close()            {}
-
 func TestStreamManager_RegisterAndList(t *testing.T) {
 	manager := NewStreamManager(nil, pipeline.New(), nil)
 

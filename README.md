@@ -2,13 +2,20 @@
   <img src="docs/assets/logo.png" alt="Nephtys Logo" width="800" height="auto"/>
   <h1>Nephtys</h1>
   <p><strong>Real-time data stream connector for the data economy</strong></p>
+  <p>
+    <a href="https://github.com/AndreaBozzo/Nephtys/actions"><img src="https://github.com/AndreaBozzo/Nephtys/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/AndreaBozzo/Nephtys/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+    <a href="https://discord.gg/fztdKSPXSz"><img src="https://img.shields.io/discord/1469399961987711161?color=5865F2&logo=discord&logoColor=white&label=Discord" alt="Discord"></a>
+  </p>
 </div>
 
 ---
 
-Nephtys ingests live data streams (WebSocket, webhooks, gRPC), normalizes events into a standard format, and publishes them to an internal NATS broker. It exposes a REST API for dynamic stream management and is designed to stand alone or integrate with [Ceres](https://github.com/AndreaBozzo/Ceres) and [Ares](https://github.com/AndreaBozzo/Ares) through the [Pantheon](https://github.com/AndreaBozzo/Pantheon) gateway.
+Nephtys ingests live data streams (WebSocket, webhooks, gRPC), normalizes events into a standard format, and publishes them to NATS JetStream with durable persistence. It exposes a REST API for dynamic stream management and is designed as a standalone service or as part of a larger data ecosystem.
 
 > *Named after the Egyptian goddess of the night, rivers, and protector of the dead — she watches over the streams that flow in the dark.*
+
+Conceptual sibling of [Ceres](https://github.com/AndreaBozzo/Ceres) and [Ares](https://github.com/AndreaBozzo/Ares) — same philosophy, different domain. Where Ceres harvests open data portals and Ares scrapes structured data from the web, Nephtys captures data *in motion*.
 
 ## Architecture
 
@@ -17,23 +24,39 @@ cmd/nephtys/          Entrypoint — wires config, broker, pipeline, server
 internal/
   domain/             Core models — StreamEvent, StreamSourceConfig, SourceStatus
   connector/          StreamSource interface + implementations (WebSocket, ...)
-  broker/             NATS connection wrapper + typed publish
+  broker/             NATS JetStream wrapper + durable event streams
   pipeline/           Middleware chain (filtering, enrichment, dedup — extensible)
   server/             REST API — stream management + health check
+  store/              JetStream KV — persistent stream config across restarts
   config/             Environment-based configuration
 ```
 
 All connectors implement the `StreamSource` interface and are decoupled from the broker through a `publish` callback wired through the pipeline.
 
-## Prerequisites
+## Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| Language | Go 1.23+ |
+| Broker | NATS with JetStream |
+| Persistence | JetStream KV (stream configs) + Streams (event data) |
+| REST API | Go stdlib `net/http` |
+
+## Quick Start
+
+### Prerequisites
 
 - **Go** 1.23+
 - **Docker** (for NATS)
 
-## Quick Start
+### Setup
 
 ```bash
-# Start NATS
+# Clone the repository
+git clone https://github.com/AndreaBozzo/Nephtys.git
+cd Nephtys
+
+# Start NATS with JetStream
 docker compose up -d
 
 # Configure environment
@@ -49,15 +72,14 @@ make run
 
 ```bash
 make run
-# REST API on :3002, connected to NATS on :4222
+# REST API on :3000, connected to NATS on :4222
 ```
 
 ### Register a stream dynamically
 
 ```bash
-curl -X POST http://localhost:3002/v1/streams \
+curl -X POST http://localhost:3000/v1/streams \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <your-token>" \
   -d '{
     "id": "binance_btc",
     "kind": "websocket",
@@ -69,19 +91,19 @@ curl -X POST http://localhost:3002/v1/streams \
 ### List active streams
 
 ```bash
-curl http://localhost:3002/v1/streams
+curl http://localhost:3000/v1/streams
 ```
 
 ### Remove a stream
 
 ```bash
-curl -X DELETE http://localhost:3002/v1/streams/binance_btc
+curl -X DELETE http://localhost:3000/v1/streams/binance_btc
 ```
 
 ### Health check
 
 ```bash
-curl http://localhost:3002/health
+curl http://localhost:3000/health
 ```
 
 ## REST API
@@ -98,8 +120,7 @@ curl http://localhost:3002/health
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NATS_URL` | `nats://localhost:4222` | NATS broker URL |
-| `NEPHTYS_PORT` | `3002` | REST API port |
-| `NEPHTYS_ADMIN_TOKEN` | — | Bearer token for API auth (optional) |
+| `NEPHTYS_PORT` | `3000` | REST API port |
 | `NEPHTYS_LOG_LEVEL` | `info` | Log level |
 
 ## Supported Connectors
@@ -110,6 +131,14 @@ curl http://localhost:3002/health
 | `sse` | 🔜 Planned | Server-Sent Events |
 | `webhook` | 🔜 Planned | Inbound HTTP webhooks |
 | `grpc` | 🔜 Planned | gRPC streaming |
+
+## Persistence
+
+Nephtys uses NATS JetStream for all persistence — no additional database required.
+
+- **Event data** — Durably stored in JetStream streams with configurable retention (default: 72h)
+- **Stream configs** — Persisted in a JetStream KV bucket, automatically restored on restart
+- **Zero extra infrastructure** — JetStream is built into NATS
 
 ## Development
 
@@ -139,7 +168,10 @@ make docker-down
 
 - **[Ceres](https://github.com/AndreaBozzo/Ceres)** — Semantic search engine for open data portals
 - **[Ares](https://github.com/AndreaBozzo/Ares)** — Web scraper with LLM-powered structured data extraction
-- **[Pantheon](https://github.com/AndreaBozzo/Pantheon)** — Unified TypeScript API gateway
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for setup instructions and guidelines.
 
 ## License
 

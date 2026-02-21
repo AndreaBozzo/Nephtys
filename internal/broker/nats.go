@@ -106,6 +106,8 @@ func (b *Broker) IsConnected() bool {
 
 // Close drains and closes the NATS connection.
 func (b *Broker) Close() {
-	b.conn.Drain()
+	if err := b.conn.Drain(); err != nil {
+		b.logger.Warn("NATS drain error", "error", err)
+	}
 	b.logger.Info("NATS connection closed")
 }

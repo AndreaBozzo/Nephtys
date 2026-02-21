@@ -1,0 +1,39 @@
+# Security Policy
+
+## Supported Versions
+
+Nephtys is currently in early development (pre-v1.0). Security updates will be provided for the latest development version.
+
+| Version | Supported          |
+| ------- | ------------------ |
+| main    | :white_check_mark: |
+
+## Reporting a Vulnerability
+
+If you discover a security vulnerability in Nephtys, please report it privately:
+
+1. **Do not** open a public issue
+2. Email the maintainers or use GitHub's private vulnerability reporting
+3. Include:
+   - Description of the vulnerability
+   - Steps to reproduce
+   - Potential impact
+   - Suggested fix (if any)
+
+We will respond within 48 hours and work with you to address the issue.
+
+## Security Considerations
+
+When using Nephtys:
+
+- **NATS Credentials**: Never commit NATS authentication credentials to version control
+- **Stream Sources**: Be cautious when connecting to untrusted WebSocket or stream endpoints
+- **API Access**: Consider placing the REST API behind a reverse proxy with authentication in production
+- **Dependencies**: Keep Go dependencies updated with `go get -u ./...`
+
+## Disclosure Policy
+
+Once a security issue is fixed, we will:
+1. Release a patch
+2. Publish a security advisory
+3. Credit the reporter (unless they prefer anonymity)

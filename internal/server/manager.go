@@ -86,7 +86,9 @@ func (m *StreamManager) Remove(id string) error {
 
 	// Remove persisted config
 	if m.store != nil {
-		m.store.Delete(id)
+		if err := m.store.Delete(id); err != nil {
+			m.logger.Warn("Failed to delete persisted config", "id", id, "error", err)
+		}
 	}
 
 	m.logger.Info("Source removed", "id", id)
