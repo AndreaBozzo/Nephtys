@@ -1,0 +1,19 @@
+services:
+  nats:
+    image: nats:latest
+    container_name: nephtys_nats
+    restart: always
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # HTTP monitoring
+    command: ["--jetstream", "--store_dir", "/data"]
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "nats-server", "--signal", "ldm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  nats-data:
