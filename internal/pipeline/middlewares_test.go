@@ -155,7 +155,9 @@ func TestTransformMiddleware(t *testing.T) {
 	}
 	resMissing, _ := transform(evtMissing)
 	var payloadMissing map[string]interface{}
-	json.Unmarshal(resMissing.Payload, &payloadMissing)
+	if err := json.Unmarshal(resMissing.Payload, &payloadMissing); err != nil {
+		t.Fatalf("failed to unmarshal missing result: %v", err)
+	}
 
 	if payloadMissing["symbol"] != "ETHUSDT" {
 		t.Errorf("expected symbol ETHUSDT, got %v", payloadMissing["symbol"])
@@ -191,7 +193,9 @@ func TestBuilderFullConfig(t *testing.T) {
 	}
 
 	var payload map[string]interface{}
-	json.Unmarshal(res.Payload, &payload)
+	if err := json.Unmarshal(res.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal enriched result: %v", err)
+	}
 	if payload["foo"] != "bar" {
 		t.Error("event was not enriched")
 	}

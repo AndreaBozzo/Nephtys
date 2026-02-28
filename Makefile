@@ -30,8 +30,8 @@ fmt: ## Format code
 vet: ## Run go vet
 	go vet ./...
 
-lint: vet ## Run lints (vet)
-	@echo "Lint passed"
+lint: ## Run lints (golangci-lint)
+	golangci-lint run ./...
 
 clean: ## Remove build artifacts
 	rm -f $(BINARY)
@@ -46,4 +46,4 @@ docker-down: ## Stop NATS
 docker-build: ## Build the Docker image
 	docker build -t nephtys:latest .
 
-all: fmt vet test ## Run fmt, vet, and tests
+all: fmt vet lint test ## Run fmt, vet, lint, and tests
