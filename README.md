@@ -181,11 +181,6 @@ make docker-up
 make docker-down
 ```
 
-## Related Projects
-
-- **[Ceres](https://github.com/AndreaBozzo/Ceres)** — Semantic search engine for open data portals
-- **[Ares](https://github.com/AndreaBozzo/Ares)** — Web scraper with LLM-powered structured data extraction
-
 ## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for setup instructions and guidelines.
