@@ -30,4 +30,37 @@ type StreamSourceConfig struct {
 	URL      string            `json:"url"`
 	Topic    string            `json:"topic"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+	Pipeline *PipelineConfig   `json:"pipeline,omitempty"`
+}
+
+// PipelineConfig contains the per-stream middleware configurations.
+type PipelineConfig struct {
+	Filter    *FilterConfig    `json:"filter,omitempty"`
+	Transform *TransformConfig `json:"transform,omitempty"`
+	Enrich    *EnrichConfig    `json:"enrich,omitempty"`
+	Dedup     *DedupConfig     `json:"dedup,omitempty"`
+}
+
+// FilterConfig allows dropping events that don't match criteria.
+type FilterConfig struct {
+	// Drop events where Type does not match (exact match if provided)
+	MatchTypes []string `json:"match_types,omitempty"`
+}
+
+// TransformConfig allows remapping JSON payload fields using dot-notation paths.
+type TransformConfig struct {
+	// Mapping maps a "new_key" to a "path.to.old_value".
+	Mapping map[string]string `json:"mapping,omitempty"`
+}
+
+// EnrichConfig allows injecting static tags into events.
+type EnrichConfig struct {
+	Tags map[string]string `json:"tags,omitempty"`
+}
+
+// DedupConfig configures the event deduplication middleware.
+type DedupConfig struct {
+	Enabled   bool   `json:"enabled"`
+	CacheSize int    `json:"cache_size,omitempty"` // Size of LRU/Hash cache (default 1000)
+	TTL       string `json:"ttl,omitempty"`        // Time to live (default "1m")
 }

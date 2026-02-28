@@ -7,7 +7,6 @@ import (
 
 	"nephtys/internal/connector"
 	"nephtys/internal/domain"
-	"nephtys/internal/pipeline"
 )
 
 // mockSource implements connector.StreamSource for testing the manager
@@ -29,7 +28,7 @@ func (m *mockSource) ID() string                  { return m.id }
 func (m *mockSource) Status() domain.SourceStatus { return m.status }
 
 func TestStreamManager_RegisterAndList(t *testing.T) {
-	manager := NewStreamManager(nil, pipeline.New(), nil)
+	manager := NewStreamManager(nil, nil)
 
 	src := &mockSource{id: "test-1", status: domain.StatusIdle}
 
@@ -50,7 +49,7 @@ func TestStreamManager_RegisterAndList(t *testing.T) {
 }
 
 func TestStreamManager_RemoveExisting(t *testing.T) {
-	manager := NewStreamManager(nil, pipeline.New(), nil)
+	manager := NewStreamManager(nil, nil)
 	src := &mockSource{id: "rm-me", status: domain.StatusRunning}
 
 	manager.mu.Lock()
@@ -73,7 +72,7 @@ func TestStreamManager_RemoveExisting(t *testing.T) {
 }
 
 func TestStreamManager_RemoveNotFound(t *testing.T) {
-	manager := NewStreamManager(nil, pipeline.New(), nil)
+	manager := NewStreamManager(nil, nil)
 
 	err := manager.Remove("ghost")
 	if err == nil {
@@ -82,7 +81,7 @@ func TestStreamManager_RemoveNotFound(t *testing.T) {
 }
 
 func TestStreamManager_DuplicateRegister(t *testing.T) {
-	manager := NewStreamManager(nil, pipeline.New(), nil)
+	manager := NewStreamManager(nil, nil)
 
 	src1 := &mockSource{id: "dupe", status: domain.StatusRunning}
 	src2 := &mockSource{id: "dupe", status: domain.StatusIdle}
@@ -102,7 +101,7 @@ func TestStreamManager_DuplicateRegister(t *testing.T) {
 }
 
 func TestStreamManager_StopAll(t *testing.T) {
-	manager := NewStreamManager(nil, pipeline.New(), nil)
+	manager := NewStreamManager(nil, nil)
 
 	sources := []*mockSource{
 		{id: "a", status: domain.StatusRunning},

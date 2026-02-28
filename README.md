@@ -25,7 +25,7 @@ internal/
   domain/             Core models — StreamEvent, StreamSourceConfig, SourceStatus
   connector/          StreamSource interface + implementations (WebSocket, ...)
   broker/             NATS JetStream wrapper + durable event streams
-  pipeline/           Middleware chain (filtering, enrichment, dedup — extensible)
+  pipeline/           Per-stream middleware chain (filtering, enrichment, dedup — extensible)
   server/             REST API — stream management + health check
   store/              JetStream KV — persistent stream config across restarts
   config/             Environment-based configuration
@@ -84,7 +84,13 @@ curl -X POST http://localhost:3000/v1/streams \
     "id": "binance_btc",
     "kind": "websocket",
     "url": "wss://stream.binance.com:9443/ws/btcusdt@trade",
-    "topic": "nephtys.stream.crypto.btc"
+    "topic": "nephtys.stream.crypto.btc",
+    "pipeline": {
+      "filter": { "match_types": ["trade"] },
+      "transform": { "mapping": { "price": "data.p", "qty": "data.q" } },
+      "dedup": { "enabled": true, "ttl": "1m" },
+      "enrich": { "tags": { "env": "prod" } }
+    }
   }'
 ```
 
@@ -131,6 +137,17 @@ curl http://localhost:3000/health
 | `sse` | 🔜 Planned | Server-Sent Events |
 | `webhook` | 🔜 Planned | Inbound HTTP webhooks |
 | `grpc` | 🔜 Planned | gRPC streaming |
+
+## Pipeline Middlewares
+
+Nephtys supports per-stream configurable middlewares to process events before they are published to NATS:
+
+- **Filter**: Drop events that don't match specific types.
+- **Transform**: Pluck variables from deeply nested JSON payloads and flatten them to root using dot-notation maps.
+- **Dedup**: Prevent publishing duplicate messages within a time window using FNV-64a payload hashing and an LRU cache.
+- **Enrich**: Inject static tags into JSON object payloads.
+
+Middlewares are configured dynamically within the JSON payload when registering a stream via the API.
 
 ## Persistence
 

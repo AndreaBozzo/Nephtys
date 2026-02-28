@@ -17,25 +17,23 @@ import (
 // It persists stream configurations to a JetStream KV store so streams
 // survive restarts.
 type StreamManager struct {
-	mu       sync.RWMutex
-	sources  map[string]connector.StreamSource
-	cancels  map[string]context.CancelFunc
-	broker   *broker.Broker
-	pipeline *pipeline.Pipeline
-	store    *store.StreamStore // nil in tests
-	logger   *slog.Logger
+	mu      sync.RWMutex
+	sources map[string]connector.StreamSource
+	cancels map[string]context.CancelFunc
+	broker  *broker.Broker
+	store   *store.StreamStore // nil in tests
+	logger  *slog.Logger
 }
 
-// NewStreamManager creates a manager backed by the given broker, pipeline, and store.
+// NewStreamManager creates a manager backed by the given broker and store.
 // The store may be nil (e.g. in unit tests), in which case persistence is disabled.
-func NewStreamManager(brk *broker.Broker, pipe *pipeline.Pipeline, st *store.StreamStore) *StreamManager {
+func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager {
 	return &StreamManager{
-		sources:  make(map[string]connector.StreamSource),
-		cancels:  make(map[string]context.CancelFunc),
-		broker:   brk,
-		pipeline: pipe,
-		store:    st,
-		logger:   slog.With("component", "manager"),
+		sources: make(map[string]connector.StreamSource),
+		cancels: make(map[string]context.CancelFunc),
+		broker:  brk,
+		store:   st,
+		logger:  slog.With("component", "manager"),
 	}
 }
 
@@ -63,7 +61,7 @@ func (m *StreamManager) Register(source connector.StreamSource, cfg domain.Strea
 		}
 	}
 
-	m.startSourceLocked(id, source)
+	m.startSourceLocked(id, source, cfg)
 	return nil
 }
 
@@ -121,7 +119,7 @@ func (m *StreamManager) Restore() error {
 			m.logger.Warn("Skipping unrestorable stream", "id", cfg.ID, "error", err)
 			continue
 		}
-		m.startSourceLocked(cfg.ID, source)
+		m.startSourceLocked(cfg.ID, source, cfg)
 		m.logger.Info("Stream restored", "id", cfg.ID, "kind", cfg.Kind)
 	}
 
@@ -161,13 +159,16 @@ func (m *StreamManager) StopAll() {
 }
 
 // startSourceLocked launches a source in a goroutine. Must be called with mu held.
-func (m *StreamManager) startSourceLocked(id string, source connector.StreamSource) {
+func (m *StreamManager) startSourceLocked(id string, source connector.StreamSource, cfg domain.StreamSourceConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.sources[id] = source
 	m.cancels[id] = cancel
 
+	// Build stream-specific pipeline
+	pipe := pipeline.BuildFromConfig(cfg.Pipeline)
+
 	publish := func(topic string, event domain.StreamEvent) error {
-		processed, ok := m.pipeline.Process(event)
+		processed, ok := pipe.Process(event)
 		if !ok {
 			return nil
 		}
