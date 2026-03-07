@@ -94,6 +94,23 @@ curl -X POST http://localhost:3000/v1/streams \
   }'
 ```
 
+### Register a REST Poller stream
+
+```bash
+curl -X POST http://localhost:3000/v1/streams \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "weather_data",
+    "kind": "rest_poller",
+    "url": "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current_weather=true",
+    "topic": "nephtys.stream.weather",
+    "rest_poller": {
+      "interval": "5m",
+      "method": "GET"
+    }
+  }'
+```
+
 ### List active streams
 
 ```bash
@@ -134,6 +151,7 @@ curl http://localhost:3000/health
 | Kind | Status | Description |
 |------|--------|-------------|
 | `websocket` | ✅ Ready | WebSocket with auto-reconnect and exponential backoff |
+| `rest_poller` | ✅ Ready | Periodically poll REST APIs at a configured interval |
 | `sse` | 🔜 Planned | Server-Sent Events |
 | `webhook` | 🔜 Planned | Inbound HTTP webhooks |
 | `grpc` | 🔜 Planned | gRPC streaming |
