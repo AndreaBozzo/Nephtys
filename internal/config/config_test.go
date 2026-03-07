@@ -7,10 +7,9 @@ import (
 
 func TestLoad_Defaults(t *testing.T) {
 	// Clear any env vars that might interfere
-	os.Unsetenv("NATS_URL")
-	os.Unsetenv("NEPHTYS_PORT")
-	os.Unsetenv("NEPHTYS_LOG_LEVEL")
-	os.Unsetenv("NEPHTYS_ADMIN_TOKEN")
+	for _, k := range []string{"NATS_URL", "NEPHTYS_PORT", "NEPHTYS_LOG_LEVEL", "NEPHTYS_ADMIN_TOKEN"} {
+		_ = os.Unsetenv(k)
+	}
 
 	cfg := Load()
 
@@ -29,16 +28,10 @@ func TestLoad_Defaults(t *testing.T) {
 }
 
 func TestLoad_FromEnv(t *testing.T) {
-	os.Setenv("NATS_URL", "nats://custom:4222")
-	os.Setenv("NEPHTYS_PORT", "8080")
-	os.Setenv("NEPHTYS_LOG_LEVEL", "debug")
-	os.Setenv("NEPHTYS_ADMIN_TOKEN", "secret-token")
-	defer func() {
-		os.Unsetenv("NATS_URL")
-		os.Unsetenv("NEPHTYS_PORT")
-		os.Unsetenv("NEPHTYS_LOG_LEVEL")
-		os.Unsetenv("NEPHTYS_ADMIN_TOKEN")
-	}()
+	t.Setenv("NATS_URL", "nats://custom:4222")
+	t.Setenv("NEPHTYS_PORT", "8080")
+	t.Setenv("NEPHTYS_LOG_LEVEL", "debug")
+	t.Setenv("NEPHTYS_ADMIN_TOKEN", "secret-token")
 
 	cfg := Load()
 

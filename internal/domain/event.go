@@ -25,12 +25,20 @@ const (
 
 // StreamSourceConfig describes how to create and manage a stream source.
 type StreamSourceConfig struct {
-	ID       string            `json:"id"`
-	Kind     string            `json:"kind"` // "websocket", "sse", "webhook", "grpc"
-	URL      string            `json:"url"`
-	Topic    string            `json:"topic"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-	Pipeline *PipelineConfig   `json:"pipeline,omitempty"`
+	ID         string            `json:"id"`
+	Kind       string            `json:"kind"` // "websocket", "sse", "webhook", "grpc", "rest_poller"
+	URL        string            `json:"url"`
+	Topic      string            `json:"topic"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	RestPoller *RestPollerConfig `json:"rest_poller,omitempty"`
+	Pipeline   *PipelineConfig   `json:"pipeline,omitempty"`
+}
+
+// RestPollerConfig configures a REST poller source.
+type RestPollerConfig struct {
+	Interval string            `json:"interval"`         // Polling interval, e.g., "5s", "1m"
+	Method   string            `json:"method,omitempty"` // HTTP method, e.g., "GET", "POST". Defaults to "GET".
+	Headers  map[string]string `json:"headers,omitempty"`
 }
 
 // PipelineConfig contains the per-stream middleware configurations.

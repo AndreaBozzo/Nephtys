@@ -81,7 +81,9 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func readJSON(r *http.Request, v any) error {
-	defer r.Body.Close()
+	defer func() {
+		_ = r.Body.Close()
+	}()
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}

@@ -104,7 +104,7 @@ func (w *WebSocketSource) Start(ctx context.Context, publish PublishFunc) error 
 		attempt = 0 // reset on successful connection
 
 		err = w.readLoop(ctx, conn, publish)
-		conn.Close()
+		_ = conn.Close()
 
 		if ctx.Err() != nil {
 			w.setStatus(domain.StatusStopped)

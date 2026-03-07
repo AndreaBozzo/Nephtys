@@ -189,6 +189,8 @@ func sourceFromConfig(cfg domain.StreamSourceConfig) (connector.StreamSource, er
 	switch cfg.Kind {
 	case "websocket":
 		return connector.NewWebSocketSource(cfg.ID, cfg.URL, cfg.Topic), nil
+	case "rest_poller":
+		return connector.NewRESTPollerSource(cfg.ID, cfg.URL, cfg.Topic, cfg.RestPoller), nil
 	default:
 		return nil, fmt.Errorf("unsupported kind: %s", cfg.Kind)
 	}
