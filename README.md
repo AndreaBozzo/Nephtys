@@ -163,13 +163,13 @@ curl http://localhost:3000/health
 
 ## Supported Connectors
 
-| Kind | Status | Description |
-|------|--------|-------------|
-| `websocket` | ✅ Ready | WebSocket with auto-reconnect and exponential backoff |
-| `rest_poller` | ✅ Ready | Periodically poll REST APIs at a configured interval |
-| `sse` | ✅ Ready | Server-Sent Events |
-| `webhook` | ✅ Ready | Inbound HTTP webhooks |
-| `grpc` | ✅ Ready | gRPC client streaming (high-throughput, low-latency) |
+| Kind | Description |
+|------|-------------|
+| `websocket` | WebSocket with auto-reconnect and exponential backoff |
+| `rest_poller` | Periodically poll REST APIs at a configured interval |
+| `sse` | Server-Sent Events |
+| `webhook` | Inbound HTTP webhooks |
+| `grpc` | gRPC client streaming (high-throughput, low-latency) |
 
 ## Pipeline Middlewares
 
