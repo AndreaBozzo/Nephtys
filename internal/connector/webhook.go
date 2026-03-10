@@ -100,7 +100,7 @@ func (w *WebhookSource) Start(ctx context.Context, publish PublishFunc) error {
 		case <-ctx.Done():
 			w.setStatus(domain.StatusStopped)
 			w.logger.Info("Stopping Webhook server")
-			
+
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := w.server.Shutdown(shutdownCtx); err != nil {

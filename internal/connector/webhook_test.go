@@ -35,7 +35,7 @@ func TestWebhookSource(t *testing.T) {
 		payload := `{"foo": "bar"}`
 		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 		req.Header.Set("Authorization", "Bearer secret123")
-		
+
 		w := httptest.NewRecorder()
 		handler(w, req)
 
@@ -49,7 +49,7 @@ func TestWebhookSource(t *testing.T) {
 		if len(events) != 1 {
 			t.Fatalf("Expected 1 event published, got %d", len(events))
 		}
-		
+
 		if string(events[0].Payload) != payload {
 			t.Errorf("Expected payload %s, got %s", payload, string(events[0].Payload))
 		}
@@ -60,7 +60,7 @@ func TestWebhookSource(t *testing.T) {
 		payload := `{"foo": "bar"}`
 		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 		// No auth header
-		
+
 		w := httptest.NewRecorder()
 		handler(w, req)
 
@@ -80,7 +80,7 @@ func TestWebhookSource(t *testing.T) {
 		payload := `{"foo": "bar"}`
 		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 		req.Header.Set("Authorization", "Bearer wrong123")
-		
+
 		w := httptest.NewRecorder()
 		handler(w, req)
 
@@ -95,7 +95,7 @@ func TestWebhookSource(t *testing.T) {
 	t.Run("Invalid HTTP Method", func(t *testing.T) {
 		events = nil
 		req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
-		
+
 		w := httptest.NewRecorder()
 		handler(w, req)
 
@@ -111,7 +111,7 @@ func TestWebhookSource(t *testing.T) {
 		events = nil
 		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(""))
 		req.Header.Set("Authorization", "Bearer secret123")
-		
+
 		w := httptest.NewRecorder()
 		handler(w, req)
 
@@ -128,7 +128,7 @@ func TestWebhookSource(t *testing.T) {
 		payload := `just some string`
 		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 		req.Header.Set("Authorization", "Bearer secret123")
-		
+
 		w := httptest.NewRecorder()
 		handler(w, req)
 
@@ -142,7 +142,7 @@ func TestWebhookSource(t *testing.T) {
 		if len(events) != 1 {
 			t.Fatalf("Expected 1 event published, got %d", len(events))
 		}
-		
+
 		// It should be json-escaped
 		expected := `"` + payload + `"`
 		if string(events[0].Payload) != expected {
@@ -158,7 +158,7 @@ func TestWebhookSource_Lifecycle(t *testing.T) {
 	}
 
 	source := NewWebhookSource("test-webhook-lifecycle", "test.topic", config)
-	
+
 	if source.Status() != domain.StatusIdle {
 		t.Errorf("Expected status idle, got %s", source.Status())
 	}
