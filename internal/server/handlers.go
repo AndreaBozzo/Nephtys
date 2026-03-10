@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 
-	"nephtys/internal/connector"
 	"nephtys/internal/domain"
 )
 
@@ -37,17 +36,20 @@ func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cfg.ID == "" || cfg.Kind == "" || cfg.URL == "" || cfg.Topic == "" {
-		writeError(w, http.StatusBadRequest, "id, kind, url, and topic are required")
+	if cfg.ID == "" || cfg.Kind == "" || cfg.Topic == "" {
+		writeError(w, http.StatusBadRequest, "id, kind, and topic are required")
 		return
 	}
 
-	var source connector.StreamSource
-	switch cfg.Kind {
-	case "websocket":
-		source = connector.NewWebSocketSource(cfg.ID, cfg.URL, cfg.Topic)
-	default:
-		writeError(w, http.StatusBadRequest, "unsupported kind: "+cfg.Kind+". Supported: websocket")
+	// URL is required for all except webhook
+	if cfg.Kind != "webhook" && cfg.URL == "" {
+		writeError(w, http.StatusBadRequest, "url is required for kind "+cfg.Kind)
+		return
+	}
+
+	source, err := sourceFromConfig(cfg)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

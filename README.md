@@ -153,7 +153,7 @@ curl http://localhost:3000/health
 | `websocket` | ✅ Ready | WebSocket with auto-reconnect and exponential backoff |
 | `rest_poller` | ✅ Ready | Periodically poll REST APIs at a configured interval |
 | `sse` | 🔜 Planned | Server-Sent Events |
-| `webhook` | 🔜 Planned | Inbound HTTP webhooks |
+| `webhook` | ✅ Ready | Inbound HTTP webhooks |
 | `grpc` | 🔜 Planned | gRPC streaming |
 
 ## Pipeline Middlewares

@@ -31,6 +31,7 @@ type StreamSourceConfig struct {
 	Topic      string            `json:"topic"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
 	RestPoller *RestPollerConfig `json:"rest_poller,omitempty"`
+	Webhook    *WebhookConfig    `json:"webhook,omitempty"`
 	Pipeline   *PipelineConfig   `json:"pipeline,omitempty"`
 }
 
@@ -39,6 +40,13 @@ type RestPollerConfig struct {
 	Interval string            `json:"interval"`         // Polling interval, e.g., "5s", "1m"
 	Method   string            `json:"method,omitempty"` // HTTP method, e.g., "GET", "POST". Defaults to "GET".
 	Headers  map[string]string `json:"headers,omitempty"`
+}
+
+// WebhookConfig configures a webhook receiver source.
+type WebhookConfig struct {
+	Port      string `json:"port"`                 // Port to listen on, e.g., "8081"
+	Path      string `json:"path"`                 // Endpoint path, e.g., "/webhook"
+	AuthToken string `json:"auth_token,omitempty"` // Simple token to verify incoming requests
 }
 
 // PipelineConfig contains the per-stream middleware configurations.

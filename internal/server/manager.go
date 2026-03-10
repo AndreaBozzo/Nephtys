@@ -191,6 +191,8 @@ func sourceFromConfig(cfg domain.StreamSourceConfig) (connector.StreamSource, er
 		return connector.NewWebSocketSource(cfg.ID, cfg.URL, cfg.Topic), nil
 	case "rest_poller":
 		return connector.NewRESTPollerSource(cfg.ID, cfg.URL, cfg.Topic, cfg.RestPoller), nil
+	case "webhook":
+		return connector.NewWebhookSource(cfg.ID, cfg.Topic, cfg.Webhook), nil
 	default:
 		return nil, fmt.Errorf("unsupported kind: %s", cfg.Kind)
 	}
