@@ -33,7 +33,13 @@ type StreamSourceConfig struct {
 	RestPoller *RestPollerConfig `json:"rest_poller,omitempty"`
 	Webhook    *WebhookConfig    `json:"webhook,omitempty"`
 	Grpc       *GrpcConfig       `json:"grpc,omitempty"`
+	Sse        *SseConfig        `json:"sse,omitempty"`
 	Pipeline   *PipelineConfig   `json:"pipeline,omitempty"`
+}
+
+// SseConfig configures a Server-Sent Events source.
+type SseConfig struct {
+	Headers map[string]string `json:"headers,omitempty"` // Custom HTTP headers
 }
 
 // GrpcConfig configures a gRPC streaming source.

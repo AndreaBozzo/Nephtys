@@ -223,6 +223,8 @@ func sourceFromConfig(cfg domain.StreamSourceConfig) (connector.StreamSource, er
 		return connector.NewWebhookSource(cfg.ID, cfg.Topic, cfg.Webhook), nil
 	case "grpc":
 		return connector.NewGrpcSource(cfg.ID, cfg.Topic, cfg.Grpc), nil
+	case "sse":
+		return connector.NewSSESource(cfg.ID, cfg.URL, cfg.Topic, cfg.Sse), nil
 	default:
 		return nil, fmt.Errorf("unsupported kind: %s", cfg.Kind)
 	}
