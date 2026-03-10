@@ -80,7 +80,9 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func readJSON(r *http.Request, v any) error {
+func readJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	// Prevent DoS: limit incoming request body to 1MB
+	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 	defer func() {
 		_ = r.Body.Close()
 	}()

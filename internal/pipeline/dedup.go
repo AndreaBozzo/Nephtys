@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"container/list"
 	"hash/fnv"
 	"sync"
 	"time"
@@ -26,8 +27,13 @@ func NewDedup(cfg *domain.DedupConfig) Middleware {
 		cacheSize = 1000
 	}
 
-	// Simple hash cache
-	cache := make(map[uint64]time.Time, cacheSize)
+	// LRU cache components
+	type entry struct {
+		hash uint64
+		ts   time.Time
+	}
+	ll := list.New()
+	cache := make(map[uint64]*list.Element, cacheSize)
 	var mu sync.Mutex
 
 	return func(event domain.StreamEvent) (domain.StreamEvent, bool) {
@@ -41,28 +47,31 @@ func NewDedup(cfg *domain.DedupConfig) Middleware {
 
 		now := time.Now()
 
-		// Map cleanup if it gets too large (simple approach)
-		if len(cache) >= cacheSize {
-			for k, t := range cache {
-				if now.Sub(t) > ttl {
-					delete(cache, k)
-				}
+		// Check if seen
+		if elem, exists := cache[hash]; exists {
+			ent := elem.Value.(*entry)
+			if now.Sub(ent.ts) <= ttl {
+				// Move to front (recently used)
+				ll.MoveToFront(elem)
+				return event, false // Duplicate, drop it
 			}
-			// If still too large, just clear it to prevent memory leaks in this simple implementation
-			if len(cache) >= cacheSize {
-				cache = make(map[uint64]time.Time, cacheSize)
-			}
+			// Expired: technically we can just update it below, but let's remove it first
+			ll.Remove(elem)
+			delete(cache, hash)
 		}
 
-		// Check if seen
-		if seenAt, exists := cache[hash]; exists {
-			if now.Sub(seenAt) <= ttl {
-				return event, false // Duplicate, drop it
+		// Map cleanup if it gets too large (LRU eviction)
+		if len(cache) >= cacheSize {
+			oldest := ll.Back()
+			if oldest != nil {
+				ll.Remove(oldest)
+				delete(cache, oldest.Value.(*entry).hash)
 			}
 		}
 
 		// Mark as seen
-		cache[hash] = now
+		elem := ll.PushFront(&entry{hash: hash, ts: now})
+		cache[hash] = elem
 		return event, true
 	}
 }

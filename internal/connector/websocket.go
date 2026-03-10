@@ -27,6 +27,7 @@ type WebSocketSource struct {
 	logger *slog.Logger
 
 	mu     sync.RWMutex
+	conn   *websocket.Conn
 	status domain.SourceStatus
 	cancel context.CancelFunc
 }
@@ -103,7 +104,16 @@ func (w *WebSocketSource) Start(ctx context.Context, publish PublishFunc) error 
 		w.logger.Info("Connected")
 		attempt = 0 // reset on successful connection
 
+		w.mu.Lock()
+		w.conn = conn
+		w.mu.Unlock()
+
 		err = w.readLoop(ctx, conn, publish)
+
+		w.mu.Lock()
+		w.conn = nil
+		w.mu.Unlock()
+
 		_ = conn.Close()
 
 		if ctx.Err() != nil {
@@ -143,9 +153,14 @@ func (w *WebSocketSource) readLoop(ctx context.Context, conn *websocket.Conn, pu
 	}
 }
 
-// Stop cancels the source's context, triggering graceful shutdown.
+// Stop cancels the source's context and forces the active connection to close, tearing down the reader goroutine.
 func (w *WebSocketSource) Stop() {
 	if w.cancel != nil {
 		w.cancel()
 	}
+	w.mu.Lock()
+	if w.conn != nil {
+		_ = w.conn.Close()
+	}
+	w.mu.Unlock()
 }

@@ -31,7 +31,7 @@ func (s *Server) handleListStreams(w http.ResponseWriter, r *http.Request) {
 // handleCreateStream registers and starts a new stream source.
 func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 	var cfg domain.StreamSourceConfig
-	if err := readJSON(r, &cfg); err != nil {
+	if err := readJSON(w, r, &cfg); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

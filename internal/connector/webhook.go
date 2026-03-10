@@ -130,10 +130,13 @@ func (w *WebhookSource) handleWebhook(publish PublishFunc) http.HandlerFunc {
 			}
 		}
 
+		// Prevent DoS: limit incoming request body to 5MB
+		req.Body = http.MaxBytesReader(res, req.Body, 5*1024*1024)
+
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			w.logger.Error("Failed to read webhook body", "error", err)
-			http.Error(res, "Bad Request", http.StatusBadRequest)
+			http.Error(res, "Bad Request or Payload Too Large", http.StatusBadRequest)
 			return
 		}
 		defer req.Body.Close()

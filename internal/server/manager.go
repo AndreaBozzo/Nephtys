@@ -20,6 +20,7 @@ type StreamManager struct {
 	mu      sync.RWMutex
 	sources map[string]connector.StreamSource
 	cancels map[string]context.CancelFunc
+	dones   map[string]chan struct{}
 	broker  *broker.Broker
 	store   *store.StreamStore // nil in tests
 	logger  *slog.Logger
@@ -31,6 +32,7 @@ func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager 
 	return &StreamManager{
 		sources: make(map[string]connector.StreamSource),
 		cancels: make(map[string]context.CancelFunc),
+		dones:   make(map[string]chan struct{}),
 		broker:  brk,
 		store:   st,
 		logger:  slog.With("component", "manager"),
@@ -79,8 +81,15 @@ func (m *StreamManager) Remove(id string) error {
 	if cancel, ok := m.cancels[id]; ok {
 		cancel()
 	}
+
+	// Wait for the source's goroutine to finish shutting down
+	if done, ok := m.dones[id]; ok {
+		<-done
+	}
+
 	delete(m.sources, id)
 	delete(m.cancels, id)
+	delete(m.dones, id)
 
 	// Remove persisted config
 	if m.store != nil {
@@ -147,22 +156,40 @@ func (m *StreamManager) StopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	var wg sync.WaitGroup
+
 	for id, source := range m.sources {
 		source.Stop()
 		if cancel, ok := m.cancels[id]; ok {
 			cancel()
 		}
+
+		if done, ok := m.dones[id]; ok {
+			wg.Add(1)
+			go func(d chan struct{}) {
+				defer wg.Done()
+				<-d
+			}(done)
+		}
 		m.logger.Info("Source stopped", "id", id)
 	}
+
+	// Wait for all sources to cleanly exit
+	wg.Wait()
+
 	m.sources = make(map[string]connector.StreamSource)
 	m.cancels = make(map[string]context.CancelFunc)
+	m.dones = make(map[string]chan struct{})
 }
 
 // startSourceLocked launches a source in a goroutine. Must be called with mu held.
 func (m *StreamManager) startSourceLocked(id string, source connector.StreamSource, cfg domain.StreamSourceConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
 	m.sources[id] = source
 	m.cancels[id] = cancel
+	m.dones[id] = done
 
 	// Build stream-specific pipeline
 	pipe := pipeline.BuildFromConfig(cfg.Pipeline)
@@ -176,6 +203,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	}
 
 	go func() {
+		defer close(done)
 		if err := source.Start(ctx, publish); err != nil && ctx.Err() == nil {
 			m.logger.Error("Source terminated with error", "id", id, "error", err)
 		}
