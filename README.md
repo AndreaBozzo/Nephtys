@@ -111,6 +111,21 @@ curl -X POST http://localhost:3000/v1/streams \
   }'
 ```
 
+### Register a gRPC stream
+
+```bash
+curl -X POST http://localhost:3000/v1/streams \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "internal_telemetry",
+    "kind": "grpc",
+    "topic": "nephtys.stream.telemetry",
+    "grpc": {
+      "port": "50051"
+    }
+  }'
+```
+
 ### List active streams
 
 ```bash
@@ -154,7 +169,7 @@ curl http://localhost:3000/health
 | `rest_poller` | ✅ Ready | Periodically poll REST APIs at a configured interval |
 | `sse` | 🔜 Planned | Server-Sent Events |
 | `webhook` | ✅ Ready | Inbound HTTP webhooks |
-| `grpc` | 🔜 Planned | gRPC streaming |
+| `grpc` | ✅ Ready | gRPC client streaming (high-throughput, low-latency) |
 
 ## Pipeline Middlewares
 

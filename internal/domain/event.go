@@ -27,12 +27,18 @@ const (
 type StreamSourceConfig struct {
 	ID         string            `json:"id"`
 	Kind       string            `json:"kind"` // "websocket", "sse", "webhook", "grpc", "rest_poller"
-	URL        string            `json:"url"`
+	URL        string            `json:"url,omitempty"`
 	Topic      string            `json:"topic"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
 	RestPoller *RestPollerConfig `json:"rest_poller,omitempty"`
 	Webhook    *WebhookConfig    `json:"webhook,omitempty"`
+	Grpc       *GrpcConfig       `json:"grpc,omitempty"`
 	Pipeline   *PipelineConfig   `json:"pipeline,omitempty"`
+}
+
+// GrpcConfig configures a gRPC streaming source.
+type GrpcConfig struct {
+	Port string `json:"port"` // Port to listen on, e.g., "50051"
 }
 
 // RestPollerConfig configures a REST poller source.
