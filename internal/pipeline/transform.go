@@ -3,7 +3,6 @@ package pipeline
 import (
 	"encoding/json"
 	"log/slog"
-	"strings"
 
 	"nephtys/internal/domain"
 )
@@ -46,24 +45,4 @@ func NewTransform(cfg *domain.TransformConfig) Middleware {
 			return next(topic, event)
 		}
 	}
-}
-
-// extractValue traverses a nested map using dot notation (e.g., "data.kline.c")
-func extractValue(obj map[string]interface{}, path string) (interface{}, bool) {
-	parts := strings.Split(path, ".")
-	var current interface{} = obj
-
-	for _, part := range parts {
-		if currentMap, ok := current.(map[string]interface{}); ok {
-			if val, exists := currentMap[part]; exists {
-				current = val
-			} else {
-				return nil, false
-			}
-		} else {
-			return nil, false
-		}
-	}
-
-	return current, true
 }

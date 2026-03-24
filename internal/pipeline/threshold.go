@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
+	"strconv"
 	"sync"
 
 	"nephtys/internal/domain"
@@ -46,6 +47,12 @@ func NewThreshold(streamID string, cfg *domain.ThresholdConfig) Middleware {
 				currentVal = float64(v)
 			case int:
 				currentVal = float64(v)
+			case string:
+				parsed, err := strconv.ParseFloat(v, 64)
+				if err != nil {
+					return next(topic, event)
+				}
+				currentVal = parsed
 			default:
 				// Not a numerical value, pass through
 				return next(topic, event)

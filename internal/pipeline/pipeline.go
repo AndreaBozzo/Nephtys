@@ -1,6 +1,10 @@
 package pipeline
 
-import "nephtys/internal/domain"
+import (
+	"strings"
+
+	"nephtys/internal/domain"
+)
 
 // Handler processes an event intended for a specific topic.
 // It returns an error if the processing fails.
@@ -28,3 +32,24 @@ func (p *Pipeline) Execute(publish Handler) Handler {
 	}
 	return handler
 }
+
+// extractValue traverses a nested map using dot notation (e.g., "data.kline.c")
+func extractValue(obj map[string]interface{}, path string) (interface{}, bool) {
+	parts := strings.Split(path, ".")
+	var current interface{} = obj
+
+	for _, part := range parts {
+		if currentMap, ok := current.(map[string]interface{}); ok {
+			if val, exists := currentMap[part]; exists {
+				current = val
+			} else {
+				return nil, false
+			}
+		} else {
+			return nil, false
+		}
+	}
+
+	return current, true
+}
+

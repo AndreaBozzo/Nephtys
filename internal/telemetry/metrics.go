@@ -25,4 +25,9 @@ var (
 		Name: "bytes_published_total",
 		Help: "The total number of bytes published to NATS",
 	}, []string{"stream_id"})
+
+	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "events_published_total",
+		Help: "The total number of events published to NATS",
+	}, []string{"stream_id"})
 )

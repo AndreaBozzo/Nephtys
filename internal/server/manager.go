@@ -225,6 +225,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	// Build initial handler
 	pipe := pipeline.BuildFromConfig(id, cfg.Pipeline)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
+		telemetry.EventsPublished.WithLabelValues(id).Inc()
 		telemetry.BytesPublished.WithLabelValues(id).Add(float64(len(event.Payload)))
 		return m.broker.Publish(topic, event)
 	})
