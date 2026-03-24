@@ -4,16 +4,27 @@ services:
     container_name: nephtys_nats
     restart: always
     ports:
-      - "4222:4222"   # Client connections
-      - "8222:8222"   # HTTP monitoring
-    command: ["--jetstream", "--store_dir", "/data"]
+      - "4222:4222"
+      - "8222:8222"
+    command: [ "--jetstream", "--store_dir", "/data" ]
     volumes:
       - nats-data:/data
-    healthcheck:
-      test: ["CMD", "nats-server", "--signal", "ldm"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: nephtys_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: nephtys_grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
 
 volumes:
   nats-data:
