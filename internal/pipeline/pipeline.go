@@ -52,4 +52,3 @@ func extractValue(obj map[string]interface{}, path string) (interface{}, bool) {
 
 	return current, true
 }
-
