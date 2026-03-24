@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"nephtys/internal/broker"
 )
 
@@ -34,7 +36,7 @@ func New(port string, manager *StreamManager, brk *broker.Broker, adminToken str
 	s.registerRoutes(mux)
 
 	var handler http.Handler = mux
-	handler = bearerAuth(adminToken, map[string]bool{"/health": true})(handler)
+	handler = bearerAuth(adminToken, map[string]bool{"/health": true, "/metrics": true})(handler)
 
 	s.httpServer = &http.Server{
 		Addr:         ":" + port,
@@ -64,6 +66,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/streams", s.handleListStreams)
 	mux.HandleFunc("POST /v1/streams", s.handleCreateStream)
 	mux.HandleFunc("DELETE /v1/streams/{id}", s.handleDeleteStream)
+	mux.HandleFunc("PUT /v1/streams/{id}/pipeline", s.handleUpdatePipeline)
+	mux.Handle("GET /metrics", promhttp.Handler())
 }
 
 // --- JSON helpers ---

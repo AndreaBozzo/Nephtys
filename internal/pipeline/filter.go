@@ -2,10 +2,11 @@ package pipeline
 
 import (
 	"nephtys/internal/domain"
+	"nephtys/internal/telemetry"
 )
 
 // NewFilter creates a middleware that drops events not matching the criteria.
-func NewFilter(cfg *domain.FilterConfig) Middleware {
+func NewFilter(streamID string, cfg *domain.FilterConfig) Middleware {
 	if cfg == nil || len(cfg.MatchTypes) == 0 {
 		return nil // Passthrough
 	}
@@ -15,11 +16,13 @@ func NewFilter(cfg *domain.FilterConfig) Middleware {
 		allowedTypes[t] = true
 	}
 
-	return func(event domain.StreamEvent) (domain.StreamEvent, bool) {
-		if allowedTypes[event.Type] {
-			return event, true
+	return func(next Handler) Handler {
+		return func(topic string, event domain.StreamEvent) error {
+			if allowedTypes[event.Type] {
+				return next(topic, event)
+			}
+			telemetry.EventsDropped.WithLabelValues(streamID, "filter").Inc()
+			return nil
 		}
-		// Drop event
-		return event, false
 	}
 }

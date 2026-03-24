@@ -83,6 +83,31 @@ func (s *Server) handleDeleteStream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleUpdatePipeline updates an existing stream's pipeline without downtime.
+func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "stream id is required")
+		return
+	}
+
+	var pipelineCfg domain.PipelineConfig
+	if err := readJSON(w, r, &pipelineCfg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.manager.UpdatePipeline(id, &pipelineCfg); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id":     id,
+		"status": "pipeline updated",
+	})
+}
+
 func boolToStatus(b bool) string {
 	if b {
 		return "connected"

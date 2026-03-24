@@ -12,7 +12,7 @@ func TestFilterMiddleware(t *testing.T) {
 	cfg := &domain.FilterConfig{
 		MatchTypes: []string{"trade", "ticker"},
 	}
-	filter := NewFilter(cfg)
+	filter := NewFilter("test", cfg)
 
 	tests := []struct {
 		name      string
@@ -27,9 +27,16 @@ func TestFilterMiddleware(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			evt := domain.StreamEvent{Type: tt.eventType}
-			_, ok := filter(evt)
-			if ok != tt.wantOk {
-				t.Errorf("filter() = %v, want %v", ok, tt.wantOk)
+			passed := false
+			sink := func(topic string, e domain.StreamEvent) error {
+				passed = true
+				return nil
+			}
+			handler := filter(sink)
+			_ = handler("topic", evt)
+
+			if passed != tt.wantOk {
+				t.Errorf("filter() ok = %v, want %v", passed, tt.wantOk)
 			}
 		})
 	}
@@ -45,9 +52,18 @@ func TestEnrichMiddleware(t *testing.T) {
 	evt := domain.StreamEvent{
 		Payload: json.RawMessage(`{"price": 100}`),
 	}
-	res, ok := enrich(evt)
-	if !ok {
-		t.Fatal("enrich() returned false")
+
+	var res domain.StreamEvent
+	sink := func(topic string, e domain.StreamEvent) error {
+		res = e
+		return nil
+	}
+
+	handler := enrich(sink)
+	_ = handler("topic", evt)
+
+	if res.Payload == nil {
+		t.Fatal("enrich() returned nil payload")
 	}
 
 	var payload map[string]interface{}
@@ -66,10 +82,14 @@ func TestEnrichMiddleware(t *testing.T) {
 	evtInvalid := domain.StreamEvent{
 		Payload: json.RawMessage(`not-json`),
 	}
-	resInvalid, okInvalid := enrich(evtInvalid)
-	if !okInvalid {
-		t.Fatal("enrich() invalid json returned false")
+	resInvalid := domain.StreamEvent{}
+	sinkInvalid := func(topic string, e domain.StreamEvent) error {
+		resInvalid = e
+		return nil
 	}
+	handlerInvalid := enrich(sinkInvalid)
+	_ = handlerInvalid("topic", evtInvalid)
+
 	if string(resInvalid.Payload) != "not-json" {
 		t.Errorf("expected untouched payload, got: %s", string(resInvalid.Payload))
 	}
@@ -81,24 +101,37 @@ func TestDedupMiddleware(t *testing.T) {
 		CacheSize: 10,
 		TTL:       "50ms",
 	}
-	dedup := NewDedup(cfg)
+	dedup := NewDedup("test", cfg)
 
 	evt1 := domain.StreamEvent{Payload: json.RawMessage(`{"id": 1}`)}
 	evt2 := domain.StreamEvent{Payload: json.RawMessage(`{"id": 2}`)}
 	evt1Copy := domain.StreamEvent{Payload: json.RawMessage(`{"id": 1}`)}
 
+	passed := false
+	sink := func(topic string, e domain.StreamEvent) error {
+		passed = true
+		return nil
+	}
+	handler := dedup(sink)
+
 	// 1. First time evt1 -> ok
-	if _, ok := dedup(evt1); !ok {
+	passed = false
+	_ = handler("topic", evt1)
+	if !passed {
 		t.Error("dedup() First evt1 should be true")
 	}
 
 	// 2. Second time evt1 -> dropped
-	if _, ok := dedup(evt1Copy); ok {
+	passed = false
+	_ = handler("topic", evt1Copy)
+	if passed {
 		t.Error("dedup() Duplicate evt1 should be false")
 	}
 
 	// 3. First time evt2 -> ok
-	if _, ok := dedup(evt2); !ok {
+	passed = false
+	_ = handler("topic", evt2)
+	if !passed {
 		t.Error("dedup() First evt2 should be true")
 	}
 
@@ -106,7 +139,9 @@ func TestDedupMiddleware(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// 5. Evt1 again -> ok (cache expired)
-	if _, ok := dedup(evt1Copy); !ok {
+	passed = false
+	_ = handler("topic", evt1Copy)
+	if !passed {
 		t.Error("dedup() Expired evt1 should be true")
 	}
 }
@@ -132,9 +167,16 @@ func TestTransformMiddleware(t *testing.T) {
 		}`),
 	}
 
-	res, ok := transform(evt)
-	if !ok {
-		t.Fatal("transform() returned false")
+	var res domain.StreamEvent
+	sink := func(topic string, e domain.StreamEvent) error {
+		res = e
+		return nil
+	}
+	handler := transform(sink)
+	_ = handler("topic", evt)
+
+	if res.Payload == nil {
+		t.Fatal("transform() returned nil payload")
 	}
 
 	var payload map[string]interface{}
@@ -149,11 +191,18 @@ func TestTransformMiddleware(t *testing.T) {
 		t.Errorf("unmapped 'ignored' field was not stripped: %v", payload)
 	}
 
-	// Test missing path (should skip mapping that key silently but keep others)
+	// Test missing path
 	evtMissing := domain.StreamEvent{
-		Payload: json.RawMessage(`{"symbol": "ETHUSDT"}`), // missing data.kline.c
+		Payload: json.RawMessage(`{"symbol": "ETHUSDT"}`),
 	}
-	resMissing, _ := transform(evtMissing)
+	resMissing := domain.StreamEvent{}
+	sinkMissing := func(topic string, e domain.StreamEvent) error {
+		resMissing = e
+		return nil
+	}
+	handlerMissing := transform(sinkMissing)
+	_ = handlerMissing("topic", evtMissing)
+
 	var payloadMissing map[string]interface{}
 	if err := json.Unmarshal(resMissing.Payload, &payloadMissing); err != nil {
 		t.Fatalf("failed to unmarshal missing result: %v", err)
@@ -174,21 +223,26 @@ func TestBuilderFullConfig(t *testing.T) {
 		Dedup:  &domain.DedupConfig{Enabled: true},
 	}
 
-	pipe := BuildFromConfig(cfg)
+	pipe := BuildFromConfig("test", cfg)
 
-	// Since we can't easily introspect the pipeline's internal functions,
-	// let's do a functional test of the whole chain.
+	var res *domain.StreamEvent
+	sink := func(topic string, e domain.StreamEvent) error {
+		res = &e
+		return nil
+	}
+	handler := pipe.Execute(sink)
 
 	// 1. Event dropped by filter (wrong type)
 	droppedEvt := domain.StreamEvent{Type: "blocked", Payload: json.RawMessage(`{}`)}
-	if _, ok := pipe.Process(droppedEvt); ok {
+	_ = handler("topic", droppedEvt)
+	if res != nil {
 		t.Error("expected event to be filtered")
 	}
 
 	// 2. Event passes filter, gets enriched, and dedup stores it
 	goodEvt := domain.StreamEvent{Type: "allowed", Payload: json.RawMessage(`{"val": 1}`)}
-	res, ok := pipe.Process(goodEvt)
-	if !ok {
+	_ = handler("topic", goodEvt)
+	if res == nil {
 		t.Fatal("expected event to pass")
 	}
 
@@ -200,12 +254,10 @@ func TestBuilderFullConfig(t *testing.T) {
 		t.Error("event was not enriched")
 	}
 
-	// 3. Duplicate event passes filter, but dropped by dedup (because payload the same as original)
-	// Wait, the payload hash for dedup is computed BEFORE enrichment!
-	// Oh actually, BuildFromConfig order: Filter -> Dedup -> Enrich
-	// So dedup checks `{"val": 1}` hash. It was saved as seen.
-	// Now we send `{"val": 1}` again.
-	if _, ok := pipe.Process(goodEvt); ok {
+	// 3. Duplicate event passes filter, but dropped by dedup
+	res = nil // Reset sink
+	_ = handler("topic", goodEvt)
+	if res != nil {
 		t.Error("expected duplicate event to be dropped")
 	}
 }

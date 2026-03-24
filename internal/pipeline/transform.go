@@ -16,33 +16,35 @@ func NewTransform(cfg *domain.TransformConfig) Middleware {
 		return nil
 	}
 
-	return func(event domain.StreamEvent) (domain.StreamEvent, bool) {
-		if len(event.Payload) == 0 {
-			return event, true
-		}
-
-		var original map[string]interface{}
-		if err := json.Unmarshal(event.Payload, &original); err != nil {
-			slog.Debug("Transform: payload is not a JSON object, skipping", "source", event.Source)
-			return event, true
-		}
-
-		transformed := make(map[string]interface{}, len(cfg.Mapping))
-		for newKey, path := range cfg.Mapping {
-			if val, ok := extractValue(original, path); ok {
-				transformed[newKey] = val
+	return func(next Handler) Handler {
+		return func(topic string, event domain.StreamEvent) error {
+			if len(event.Payload) == 0 {
+				return next(topic, event)
 			}
-		}
 
-		// Repack
-		newPayload, err := json.Marshal(transformed)
-		if err != nil {
-			slog.Error("Transform: failed to marshal transformed payload", "error", err)
-			return event, true
-		}
+			var original map[string]interface{}
+			if err := json.Unmarshal(event.Payload, &original); err != nil {
+				slog.Debug("Transform: payload is not a JSON object, skipping", "source", event.Source)
+				return next(topic, event)
+			}
 
-		event.Payload = newPayload
-		return event, true
+			transformed := make(map[string]interface{}, len(cfg.Mapping))
+			for newKey, path := range cfg.Mapping {
+				if val, ok := extractValue(original, path); ok {
+					transformed[newKey] = val
+				}
+			}
+
+			// Repack
+			newPayload, err := json.Marshal(transformed)
+			if err != nil {
+				slog.Error("Transform: failed to marshal transformed payload", "error", err)
+				return next(topic, event)
+			}
+
+			event.Payload = newPayload
+			return next(topic, event)
+		}
 	}
 }
 

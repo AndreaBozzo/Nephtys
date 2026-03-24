@@ -20,87 +20,127 @@ func TestPipeline_Passthrough(t *testing.T) {
 	pipe := New()
 	event := makeEvent("test", "ws")
 
-	result, ok := pipe.Process(event)
-	if !ok {
-		t.Fatal("passthrough pipeline should not drop events")
+	var received domain.StreamEvent
+	publisher := func(topic string, e domain.StreamEvent) error {
+		received = e
+		return nil
 	}
-	if result.Source != "test" {
-		t.Errorf("expected source 'test', got %q", result.Source)
+
+	handler := pipe.Execute(publisher)
+	_ = handler("topic", event)
+
+	if received.Source != "test" {
+		t.Errorf("expected source 'test', got %q", received.Source)
 	}
 }
 
 func TestPipeline_SingleMiddleware(t *testing.T) {
-	// Middleware that uppercases the source field
-	upper := func(e domain.StreamEvent) (domain.StreamEvent, bool) {
-		e.Source = e.Source + "_processed"
-		return e, true
+	upper := func(next Handler) Handler {
+		return func(topic string, e domain.StreamEvent) error {
+			e.Source = e.Source + "_processed"
+			return next(topic, e)
+		}
 	}
 
 	pipe := New(upper)
-	result, ok := pipe.Process(makeEvent("raw", "ws"))
-
-	if !ok {
-		t.Fatal("event should not be dropped")
+	var received domain.StreamEvent
+	publisher := func(topic string, e domain.StreamEvent) error {
+		received = e
+		return nil
 	}
-	if result.Source != "raw_processed" {
-		t.Errorf("expected 'raw_processed', got %q", result.Source)
+
+	handler := pipe.Execute(publisher)
+	_ = handler("topic", makeEvent("raw", "ws"))
+
+	if received.Source != "raw_processed" {
+		t.Errorf("expected 'raw_processed', got %q", received.Source)
 	}
 }
 
 func TestPipeline_ChainOrder(t *testing.T) {
-	// Two middlewares: first appends "_a", second appends "_b"
-	a := func(e domain.StreamEvent) (domain.StreamEvent, bool) {
-		e.Source = e.Source + "_a"
-		return e, true
+	a := func(next Handler) Handler {
+		return func(topic string, e domain.StreamEvent) error {
+			e.Source = e.Source + "_a"
+			return next(topic, e)
+		}
 	}
-	b := func(e domain.StreamEvent) (domain.StreamEvent, bool) {
-		e.Source = e.Source + "_b"
-		return e, true
+	b := func(next Handler) Handler {
+		return func(topic string, e domain.StreamEvent) error {
+			e.Source = e.Source + "_b"
+			return next(topic, e)
+		}
 	}
 
 	pipe := New(a, b)
-	result, ok := pipe.Process(makeEvent("x", "ws"))
-
-	if !ok {
-		t.Fatal("event should not be dropped")
+	var received domain.StreamEvent
+	publisher := func(topic string, e domain.StreamEvent) error {
+		received = e
+		return nil
 	}
-	if result.Source != "x_a_b" {
-		t.Errorf("expected 'x_a_b', got %q — middleware order wrong", result.Source)
+
+	handler := pipe.Execute(publisher)
+	_ = handler("topic", makeEvent("x", "ws"))
+
+	if received.Source != "x_a_b" {
+		t.Errorf("expected 'x_a_b', got %q — middleware order wrong", received.Source)
 	}
 }
 
 func TestPipeline_DropEvent(t *testing.T) {
-	dropper := func(e domain.StreamEvent) (domain.StreamEvent, bool) {
-		return e, false // drop everything
+	dropper := func(next Handler) Handler {
+		return func(topic string, e domain.StreamEvent) error {
+			return nil // drop everything
+		}
 	}
-	neverReached := func(e domain.StreamEvent) (domain.StreamEvent, bool) {
-		t.Fatal("this middleware should never execute after a drop")
-		return e, true
+	neverReached := func(next Handler) Handler {
+		return func(topic string, e domain.StreamEvent) error {
+			t.Fatal("this middleware should never execute after a drop")
+			return next(topic, e)
+		}
 	}
 
 	pipe := New(dropper, neverReached)
-	_, ok := pipe.Process(makeEvent("x", "ws"))
+	published := false
+	publisher := func(topic string, e domain.StreamEvent) error {
+		published = true
+		return nil
+	}
 
-	if ok {
+	handler := pipe.Execute(publisher)
+	_ = handler("topic", makeEvent("x", "ws"))
+
+	if published {
 		t.Fatal("event should have been dropped")
 	}
 }
 
 func TestPipeline_FilterByType(t *testing.T) {
-	// Only allow "websocket_message" events through
-	filter := func(e domain.StreamEvent) (domain.StreamEvent, bool) {
-		return e, e.Type == "websocket_message"
+	filter := func(next Handler) Handler {
+		return func(topic string, e domain.StreamEvent) error {
+			if e.Type == "websocket_message" {
+				return next(topic, e)
+			}
+			return nil
+		}
 	}
 
 	pipe := New(filter)
+	published := false
+	publisher := func(topic string, e domain.StreamEvent) error {
+		published = true
+		return nil
+	}
 
-	_, ok := pipe.Process(makeEvent("x", "websocket_message"))
-	if !ok {
+	handler := pipe.Execute(publisher)
+
+	_ = handler("topic", makeEvent("x", "websocket_message"))
+	if !published {
 		t.Error("websocket_message should pass the filter")
 	}
 
-	_, ok = pipe.Process(makeEvent("x", "heartbeat"))
-	if ok {
+	published = false
+	_ = handler("topic", makeEvent("x", "heartbeat"))
+	if published {
 		t.Error("heartbeat should be dropped by the filter")
 	}
 }

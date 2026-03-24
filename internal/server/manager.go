@@ -5,37 +5,41 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"nephtys/internal/broker"
 	"nephtys/internal/connector"
 	"nephtys/internal/domain"
 	"nephtys/internal/pipeline"
 	"nephtys/internal/store"
+	"nephtys/internal/telemetry"
 )
 
 // StreamManager tracks running stream sources and manages their lifecycle.
 // It persists stream configurations to a JetStream KV store so streams
 // survive restarts.
 type StreamManager struct {
-	mu      sync.RWMutex
-	sources map[string]connector.StreamSource
-	cancels map[string]context.CancelFunc
-	dones   map[string]chan struct{}
-	broker  *broker.Broker
-	store   *store.StreamStore // nil in tests
-	logger  *slog.Logger
+	mu           sync.RWMutex
+	sources      map[string]connector.StreamSource
+	pipelineRefs map[string]*atomic.Pointer[pipeline.Handler]
+	cancels      map[string]context.CancelFunc
+	dones        map[string]chan struct{}
+	broker       *broker.Broker
+	store        *store.StreamStore // nil in tests
+	logger       *slog.Logger
 }
 
 // NewStreamManager creates a manager backed by the given broker and store.
 // The store may be nil (e.g. in unit tests), in which case persistence is disabled.
 func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager {
 	return &StreamManager{
-		sources: make(map[string]connector.StreamSource),
-		cancels: make(map[string]context.CancelFunc),
-		dones:   make(map[string]chan struct{}),
-		broker:  brk,
-		store:   st,
-		logger:  slog.With("component", "manager"),
+		sources:      make(map[string]connector.StreamSource),
+		pipelineRefs: make(map[string]*atomic.Pointer[pipeline.Handler]),
+		cancels:      make(map[string]context.CancelFunc),
+		dones:        make(map[string]chan struct{}),
+		broker:       brk,
+		store:        st,
+		logger:       slog.With("component", "manager"),
 	}
 }
 
@@ -88,6 +92,7 @@ func (m *StreamManager) Remove(id string) error {
 	}
 
 	delete(m.sources, id)
+	delete(m.pipelineRefs, id)
 	delete(m.cancels, id)
 	delete(m.dones, id)
 
@@ -136,6 +141,31 @@ func (m *StreamManager) Restore() error {
 	return nil
 }
 
+// UpdatePipeline hot-swaps the pipeline config for a running stream.
+func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineConfig) error {
+	m.mu.RLock()
+	atomicRef, exists := m.pipelineRefs[id]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("source %q not found", id)
+	}
+
+	// Update the running handler atomically
+	pipe := pipeline.BuildFromConfig(id, pipelineCfg)
+	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
+		telemetry.BytesPublished.WithLabelValues(id).Add(float64(len(event.Payload)))
+		return m.broker.Publish(topic, event)
+	})
+
+	atomicRef.Store(&handler)
+	m.logger.Info("Stream pipeline hot-reloaded", "id", id)
+
+	// Note: We don't update JetStream KV store here since Dynamic Context Adaptation
+	// is typically transient. If persistence is needed, we would add store.Update().
+	return nil
+}
+
 // List returns info about all registered sources.
 func (m *StreamManager) List() []StreamInfo {
 	m.mu.RLock()
@@ -178,6 +208,7 @@ func (m *StreamManager) StopAll() {
 	wg.Wait()
 
 	m.sources = make(map[string]connector.StreamSource)
+	m.pipelineRefs = make(map[string]*atomic.Pointer[pipeline.Handler])
 	m.cancels = make(map[string]context.CancelFunc)
 	m.dones = make(map[string]chan struct{})
 }
@@ -191,20 +222,28 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	m.cancels[id] = cancel
 	m.dones[id] = done
 
-	// Build stream-specific pipeline
-	pipe := pipeline.BuildFromConfig(cfg.Pipeline)
+	// Build initial handler
+	pipe := pipeline.BuildFromConfig(id, cfg.Pipeline)
+	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
+		telemetry.BytesPublished.WithLabelValues(id).Add(float64(len(event.Payload)))
+		return m.broker.Publish(topic, event)
+	})
 
-	publish := func(topic string, event domain.StreamEvent) error {
-		processed, ok := pipe.Process(event)
-		if !ok {
-			return nil
-		}
-		return m.broker.Publish(topic, processed)
+	var atomicRef atomic.Pointer[pipeline.Handler]
+	atomicRef.Store(&handler)
+	m.pipelineRefs[id] = &atomicRef
+
+	instrumentedPublish := func(topic string, event domain.StreamEvent) error {
+		telemetry.EventsIngested.WithLabelValues(id).Inc()
+		telemetry.BytesIngested.WithLabelValues(id).Add(float64(len(event.Payload)))
+
+		h := *atomicRef.Load()
+		return h(topic, event)
 	}
 
 	go func() {
 		defer close(done)
-		if err := source.Start(ctx, publish); err != nil && ctx.Err() == nil {
+		if err := source.Start(ctx, connector.PublishFunc(instrumentedPublish)); err != nil && ctx.Err() == nil {
 			m.logger.Error("Source terminated with error", "id", id, "error", err)
 		}
 	}()

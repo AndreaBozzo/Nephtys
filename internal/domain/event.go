@@ -67,6 +67,22 @@ type PipelineConfig struct {
 	Transform *TransformConfig `json:"transform,omitempty"`
 	Enrich    *EnrichConfig    `json:"enrich,omitempty"`
 	Dedup     *DedupConfig     `json:"dedup,omitempty"`
+	Threshold *ThresholdConfig `json:"threshold,omitempty"`
+	Batch     *BatchConfig     `json:"batch,omitempty"`
+}
+
+// ThresholdConfig configures the threshold/delta anomaly filtering.
+type ThresholdConfig struct {
+	Enabled bool    `json:"enabled"`
+	Path    string  `json:"path"`            // JSON path to the numerical value
+	Delta   float64 `json:"delta,omitempty"` // Minimum absolute change required to pass the filter
+}
+
+// BatchConfig configures the event batching middleware.
+type BatchConfig struct {
+	Enabled       bool   `json:"enabled"`
+	MaxBatchSize  int    `json:"max_batch_size,omitempty"` // Number of events to batch before flushing (default 100)
+	FlushInterval string `json:"flush_interval,omitempty"` // Time interval to flush (default "1s")
 }
 
 // FilterConfig allows dropping events that don't match criteria.
