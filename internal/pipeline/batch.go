@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"encoding/json"
-	"sync"
 	"time"
 
 	"nephtys/internal/domain"
@@ -27,68 +26,68 @@ func NewBatch(cfg *domain.BatchConfig) Middleware {
 		}
 	}
 
+	type topicEvent struct {
+		topic string
+		event domain.StreamEvent
+	}
+
+	// We return a middleware that acts as a passthrough to a background worker
 	return func(next Handler) Handler {
-		var mu sync.Mutex
-		var batch []domain.StreamEvent
-		var timer *time.Timer
-		var lastTopic string
+		eventCh := make(chan topicEvent, maxSize)
 
-		flushLocked := func() {
-			if len(batch) == 0 {
-				if timer != nil {
-					timer.Stop()
-					timer = nil
+		// Background worker for batching
+		go func() {
+			var batch []domain.StreamEvent
+			var lastTopic string
+			ticker := time.NewTicker(flushInterval)
+			defer ticker.Stop()
+
+			flush := func() {
+				if len(batch) == 0 {
+					return
 				}
-				return
-			}
-			events := batch
-			batch = nil
-			topic := lastTopic
-			if timer != nil {
-				timer.Stop()
-				timer = nil
+
+				payloads := make([]json.RawMessage, len(batch))
+				for i, e := range batch {
+					payloads[i] = e.Payload
+				}
+				arrayPayload, _ := json.Marshal(payloads)
+
+				batchedEvent := domain.StreamEvent{
+					Source:    batch[0].Source,
+					Type:      batch[0].Type + "_batch",
+					Timestamp: time.Now().UnixMilli(),
+					Payload:   arrayPayload,
+				}
+
+				// Using the last seen topic for the batch
+				_ = next(lastTopic, batchedEvent)
+				batch = batch[:0] // Reset batch, keeping allocated capacity
 			}
 
-			// Unlock to call next securely
-			mu.Unlock()
-
-			payloads := make([]json.RawMessage, len(events))
-			for i, e := range events {
-				payloads[i] = e.Payload
+			for {
+				select {
+				case te, ok := <-eventCh:
+					if !ok {
+						flush()
+						return // Channel closed, terminate worker
+					}
+					batch = append(batch, te.event)
+					lastTopic = te.topic
+					if len(batch) >= maxSize {
+						flush()
+						ticker.Reset(flushInterval)
+					}
+				case <-ticker.C:
+					flush()
+				}
 			}
-			arrayPayload, _ := json.Marshal(payloads)
-			batchedEvent := domain.StreamEvent{
-				Source:    events[0].Source,
-				Type:      events[0].Type + "_batch",
-				Timestamp: time.Now().UnixMilli(),
-				Payload:   arrayPayload,
-			}
-			_ = next(topic, batchedEvent)
+		}()
 
-			// Relock since caller expects lock on return
-			mu.Lock()
-		}
-
+		// The returned handler just pushes to the channel
 		return func(topic string, event domain.StreamEvent) error {
-			mu.Lock()
-			defer mu.Unlock()
-
-			batch = append(batch, event)
-			lastTopic = topic
-
-			if len(batch) >= maxSize {
-				flushLocked()
-				return nil
-			}
-
-			if timer == nil {
-				timer = time.AfterFunc(flushInterval, func() {
-					mu.Lock()
-					flushLocked()
-					mu.Unlock()
-				})
-			}
-
+			// Using the channel effectively decouples ingestion from processing
+			eventCh <- topicEvent{topic: topic, event: event}
 			return nil
 		}
 	}

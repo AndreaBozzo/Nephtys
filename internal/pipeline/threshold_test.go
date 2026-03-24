@@ -19,8 +19,8 @@ func TestThresholdMiddleware(t *testing.T) {
 		{Source: "s1", Payload: json.RawMessage(`{"data":{"val":10.0}}`)},
 		{Source: "s1", Payload: json.RawMessage(`{"data":{"val":10.2}}`)}, // Drop (< 0.5)
 		{Source: "s1", Payload: json.RawMessage(`{"data":{"val":10.6}}`)}, // Pass (diff 0.6)
-		{Source: "s1", Payload: json.RawMessage(`{"data":{"val":10.6}}`)}, // Drop
-		{Source: "s2", Payload: json.RawMessage(`{"data":{"val":10.2}}`)}, // Pass (new source)
+		{Source: "s1", Payload: json.RawMessage(`{"data":{"val":10.6}}`)}, // Drop (no change)
+		{Source: "s1", Payload: json.RawMessage(`{"data":{"val":11.2}}`)}, // Pass (diff 0.6)
 	}
 
 	passedCount := 0

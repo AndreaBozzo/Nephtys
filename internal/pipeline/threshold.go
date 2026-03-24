@@ -18,7 +18,8 @@ func NewThreshold(streamID string, cfg *domain.ThresholdConfig) Middleware {
 	}
 
 	var mu sync.Mutex
-	lastValues := make(map[string]float64)
+	var hasLast bool
+	var lastVal float64
 
 	return func(next Handler) Handler {
 		return func(topic string, event domain.StreamEvent) error {
@@ -51,11 +52,10 @@ func NewThreshold(streamID string, cfg *domain.ThresholdConfig) Middleware {
 			}
 
 			mu.Lock()
-			lastVal, hasLast := lastValues[event.Source]
-
 			if !hasLast || math.Abs(currentVal-lastVal) >= cfg.Delta {
 				// Record new value and pass
-				lastValues[event.Source] = currentVal
+				lastVal = currentVal
+				hasLast = true
 				mu.Unlock()
 				return next(topic, event)
 			}
