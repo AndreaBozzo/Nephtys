@@ -49,7 +49,7 @@ func TestBatchMiddleware_SizeFlush(t *testing.T) {
 		mu.Unlock()
 		t.Fatal("expected flush at 2 events")
 	}
-	
+
 	// Unmarshal payload
 	var arr []interface{}
 	if err := json.Unmarshal(batched[0].Payload, &arr); err != nil {
