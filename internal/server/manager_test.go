@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 
 	"nephtys/internal/connector"
@@ -12,6 +13,7 @@ import (
 // mockSource implements connector.StreamSource for testing the manager
 // without real WebSocket connections or NATS.
 type mockSource struct {
+	mu      sync.RWMutex
 	id      string
 	status  domain.SourceStatus
 	started bool
@@ -19,13 +21,29 @@ type mockSource struct {
 }
 
 func (m *mockSource) Start(_ context.Context, _ connector.PublishFunc) error {
+	m.mu.Lock()
 	m.started = true
 	m.status = domain.StatusRunning
+	m.mu.Unlock()
 	return nil
 }
-func (m *mockSource) Stop()                       { m.stopped = true; m.status = domain.StatusStopped }
-func (m *mockSource) ID() string                  { return m.id }
-func (m *mockSource) Status() domain.SourceStatus { return m.status }
+func (m *mockSource) Stop() {
+	m.mu.Lock()
+	m.stopped = true
+	m.status = domain.StatusStopped
+	m.mu.Unlock()
+}
+func (m *mockSource) ID() string { return m.id }
+func (m *mockSource) Status() domain.SourceStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.status
+}
+func (m *mockSource) isStopped() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.stopped
+}
 
 func TestStreamManager_RegisterAndList(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
@@ -61,7 +79,7 @@ func TestStreamManager_RemoveExisting(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !src.stopped {
+	if !src.isStopped() {
 		t.Error("source should have been stopped")
 	}
 
@@ -118,7 +136,7 @@ func TestStreamManager_StopAll(t *testing.T) {
 	manager.StopAll()
 
 	for _, s := range sources {
-		if !s.stopped {
+		if !s.isStopped() {
 			t.Errorf("source %q should have been stopped", s.id)
 		}
 	}

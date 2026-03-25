@@ -7,7 +7,7 @@ export
 BINARY := nephtys
 CMD := ./cmd/nephtys
 
-.PHONY: help build run test fmt vet lint clean docker-up docker-down all
+.PHONY: help build run test coverage fmt vet lint clean docker-up docker-down all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -22,7 +22,12 @@ run: ## Run the application
 	go run $(CMD)
 
 test: ## Run all tests
-	go test ./...
+	go test -race -cover ./...
+
+coverage: ## Generate HTML coverage report
+	go test -race -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report: coverage.html"
 
 fmt: ## Format code
 	gofmt -s -w .

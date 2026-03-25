@@ -37,7 +37,7 @@ All connectors implement the `StreamSource` interface and are decoupled from the
 
 | Component | Technology |
 |-----------|------------|
-| Language | Go 1.23+ |
+| Language | Go 1.25+ |
 | Broker | NATS with JetStream |
 | Persistence | JetStream KV (stream configs) + Streams (event data) |
 | REST API | Go stdlib `net/http` |
@@ -46,7 +46,7 @@ All connectors implement the `StreamSource` interface and are decoupled from the
 
 ### Prerequisites
 
-- **Go** 1.23+
+- **Go** 1.25+
 - **Docker** (for NATS)
 
 ### Setup

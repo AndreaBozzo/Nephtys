@@ -6,3 +6,5 @@ scrape_configs:
     metrics_path: '/metrics'
     static_configs:
       - targets: ['host.docker.internal:3002']
+    # NOTE: On Linux without Docker Desktop, replace host.docker.internal
+    # with the host's actual IP or run Nephtys inside the compose network.

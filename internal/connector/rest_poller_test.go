@@ -110,6 +110,97 @@ func TestRESTPollerSource(t *testing.T) {
 	}
 }
 
+func TestRESTPollerSource_NonJSONResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("plain text response"))
+	}))
+	defer ts.Close()
+
+	config := &domain.RestPollerConfig{Interval: "100ms", Method: "GET"}
+	source := connector.NewRESTPollerSource("poller-text", ts.URL, "test.topic", config)
+
+	events := make(chan domain.StreamEvent, 5)
+	publish := func(topic string, event domain.StreamEvent) error {
+		events <- event
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = source.Start(ctx, publish) }()
+
+	select {
+	case evt := <-events:
+		// Non-JSON body should be wrapped as a JSON string
+		if len(evt.Payload) == 0 {
+			t.Error("expected non-empty payload for non-JSON response")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for event")
+	}
+	cancel()
+	source.Stop()
+}
+
+func TestRESTPollerSource_ErrorStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	config := &domain.RestPollerConfig{Interval: "100ms", Method: "GET"}
+	source := connector.NewRESTPollerSource("poller-err", ts.URL, "test.topic", config)
+
+	events := make(chan domain.StreamEvent, 5)
+	publish := func(topic string, event domain.StreamEvent) error {
+		events <- event
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = source.Start(ctx, publish) }()
+
+	// Should not receive events on 500 status
+	select {
+	case <-events:
+		t.Fatal("should not have received event on 500 status")
+	case <-time.After(300 * time.Millisecond):
+		// OK - no events expected
+	}
+	cancel()
+	source.Stop()
+}
+
+func TestRESTPollerSource_EmptyResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// empty body
+	}))
+	defer ts.Close()
+
+	config := &domain.RestPollerConfig{Interval: "100ms", Method: "GET"}
+	source := connector.NewRESTPollerSource("poller-empty", ts.URL, "test.topic", config)
+
+	events := make(chan domain.StreamEvent, 5)
+	publish := func(topic string, event domain.StreamEvent) error {
+		events <- event
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = source.Start(ctx, publish) }()
+
+	// Should not receive events for empty body
+	select {
+	case <-events:
+		t.Fatal("should not have received event for empty body")
+	case <-time.After(300 * time.Millisecond):
+		// OK
+	}
+	cancel()
+	source.Stop()
+}
+
 func TestRESTPollerSource_InvalidInterval(t *testing.T) {
 	config := &domain.RestPollerConfig{
 		Interval: "invalid",

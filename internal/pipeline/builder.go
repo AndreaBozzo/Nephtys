@@ -1,10 +1,15 @@
 package pipeline
 
-import "nephtys/internal/domain"
+import (
+	"context"
+
+	"nephtys/internal/domain"
+)
 
 // BuildFromConfig creates a pipeline populated with middlewares
 // based on the per-stream configuration.
-func BuildFromConfig(streamID string, cfg *domain.PipelineConfig) *Pipeline {
+// The context controls the lifetime of stateful middlewares (e.g. batch worker).
+func BuildFromConfig(ctx context.Context, streamID string, cfg *domain.PipelineConfig) *Pipeline {
 	if cfg == nil {
 		return New() // Empty passthrough pipeline
 	}
@@ -37,7 +42,7 @@ func BuildFromConfig(streamID string, cfg *domain.PipelineConfig) *Pipeline {
 	}
 
 	// 6. Batching (always output as array if enabled, so it's typically the last step)
-	if batch := NewBatch(cfg.Batch); batch != nil {
+	if batch := NewBatch(ctx, cfg.Batch); batch != nil {
 		middlewares = append(middlewares, batch)
 	}
 

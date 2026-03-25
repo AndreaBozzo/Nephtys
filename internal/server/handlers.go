@@ -1,10 +1,17 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
 
 	"nephtys/internal/domain"
 )
+
+// topicPattern matches NATS-safe subject characters.
+var topicPattern = regexp.MustCompile(`^[a-zA-Z0-9._>*-]+$`)
 
 // handleHealth responds with broker connectivity status.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -41,9 +48,14 @@ func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL is required for all except webhook
-	if cfg.Kind != "webhook" && cfg.URL == "" {
+	// URL is required for all except webhook and grpc
+	if cfg.Kind != "webhook" && cfg.Kind != "grpc" && cfg.URL == "" {
 		writeError(w, http.StatusBadRequest, "url is required for kind "+cfg.Kind)
+		return
+	}
+
+	if err := validateStreamConfig(cfg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -113,4 +125,54 @@ func boolToStatus(b bool) string {
 		return "connected"
 	}
 	return "disconnected"
+}
+
+// validateStreamConfig performs input validation on a stream configuration.
+func validateStreamConfig(cfg domain.StreamSourceConfig) error {
+	if !topicPattern.MatchString(cfg.Topic) {
+		return fmt.Errorf("invalid topic %q: must match [a-zA-Z0-9._>*-]+", cfg.Topic)
+	}
+
+	// URL validation for connectors that require one
+	if cfg.Kind != "webhook" && cfg.Kind != "grpc" {
+		u, err := url.Parse(cfg.URL)
+		if err != nil {
+			return fmt.Errorf("invalid url: %w", err)
+		}
+		switch cfg.Kind {
+		case "websocket":
+			if u.Scheme != "ws" && u.Scheme != "wss" {
+				return fmt.Errorf("websocket url must use ws:// or wss:// scheme")
+			}
+		case "rest_poller", "sse":
+			if u.Scheme != "http" && u.Scheme != "https" {
+				return fmt.Errorf("%s url must use http:// or https:// scheme", cfg.Kind)
+			}
+		}
+	}
+
+	// Port validation for webhook and gRPC
+	if cfg.Webhook != nil && cfg.Webhook.Port != "" {
+		if err := validatePort(cfg.Webhook.Port); err != nil {
+			return fmt.Errorf("webhook port: %w", err)
+		}
+	}
+	if cfg.Grpc != nil && cfg.Grpc.Port != "" {
+		if err := validatePort(cfg.Grpc.Port); err != nil {
+			return fmt.Errorf("grpc port: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func validatePort(s string) error {
+	port, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("%q is not a valid port number", s)
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("port %d out of range (1-65535)", port)
+	}
+	return nil
 }

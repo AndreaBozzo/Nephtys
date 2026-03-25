@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ func TestBatchMiddleware_SizeFlush(t *testing.T) {
 		MaxBatchSize:  2,
 		FlushInterval: "1h", // Never flush by time
 	}
-	batch := NewBatch(cfg)
+	batch := NewBatch(context.Background(), cfg)
 
 	events := []domain.StreamEvent{
 		{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)},
@@ -68,7 +69,7 @@ func TestBatchMiddleware_TimeFlush(t *testing.T) {
 		MaxBatchSize:  10,
 		FlushInterval: "50ms",
 	}
-	batch := NewBatch(cfg)
+	batch := NewBatch(context.Background(), cfg)
 
 	batched := make(chan domain.StreamEvent, 1)
 	sink := func(topic string, e domain.StreamEvent) error {
