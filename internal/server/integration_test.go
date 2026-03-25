@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -214,7 +216,16 @@ func TestServerStartAndShutdown(t *testing.T) {
 	brk := connectBroker(t, srv)
 
 	manager := NewStreamManager(brk, nil)
-	s := New("0", manager, brk, "")
+
+	// Allocate a free port for the test server
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	ln.Close() //nolint:errcheck // best-effort close of temporary listener
+
+	s := New(port, manager, brk, "")
 
 	// Start in goroutine
 	errCh := make(chan error, 1)
@@ -222,8 +233,21 @@ func TestServerStartAndShutdown(t *testing.T) {
 		errCh <- s.Start()
 	}()
 
-	// Give it a moment to start
-	time.Sleep(50 * time.Millisecond)
+	// Poll until the server is accepting connections (or timeout).
+	addr := s.httpServer.Addr
+	deadline := time.After(2 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			conn.Close() //nolint:errcheck // best-effort close of probe connection
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for server to accept connections")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 
 	// Shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

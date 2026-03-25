@@ -212,6 +212,20 @@ func TestValidateStreamConfig(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "topic with NATS wildcards",
+			cfg: domain.StreamSourceConfig{
+				ID: "test", Kind: "webhook", Topic: "events.>",
+			},
+			wantErr: true,
+		},
+		{
+			name: "url with empty host",
+			cfg: domain.StreamSourceConfig{
+				ID: "test", Kind: "websocket", URL: "wss://", Topic: "t",
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

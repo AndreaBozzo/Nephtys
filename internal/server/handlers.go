@@ -10,8 +10,8 @@ import (
 	"nephtys/internal/domain"
 )
 
-// topicPattern matches NATS-safe subject characters.
-var topicPattern = regexp.MustCompile(`^[a-zA-Z0-9._>*-]+$`)
+// topicPattern matches NATS publish-safe subject characters (no wildcards).
+var topicPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 // handleHealth responds with broker connectivity status.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +130,7 @@ func boolToStatus(b bool) string {
 // validateStreamConfig performs input validation on a stream configuration.
 func validateStreamConfig(cfg domain.StreamSourceConfig) error {
 	if !topicPattern.MatchString(cfg.Topic) {
-		return fmt.Errorf("invalid topic %q: must match [a-zA-Z0-9._>*-]+", cfg.Topic)
+		return fmt.Errorf("invalid topic %q: must match [a-zA-Z0-9._-]+", cfg.Topic)
 	}
 
 	// URL validation for connectors that require one
@@ -138,6 +138,9 @@ func validateStreamConfig(cfg domain.StreamSourceConfig) error {
 		u, err := url.Parse(cfg.URL)
 		if err != nil {
 			return fmt.Errorf("invalid url: %w", err)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("url must include a host")
 		}
 		switch cfg.Kind {
 		case "websocket":

@@ -94,9 +94,12 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 
 		// The returned handler just pushes to the channel
 		return func(topic string, event domain.StreamEvent) error {
-			// Using the channel effectively decouples ingestion from processing
-			eventCh <- topicEvent{topic: topic, event: event}
-			return nil
+			select {
+			case eventCh <- topicEvent{topic: topic, event: event}:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 }

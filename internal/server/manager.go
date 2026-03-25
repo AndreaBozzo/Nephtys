@@ -170,6 +170,7 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 	// Update the running handler atomically
 	pipe := pipeline.BuildFromConfig(pipeCtx, id, pipelineCfg)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
+		telemetry.EventsPublished.WithLabelValues(id).Inc()
 		telemetry.BytesPublished.WithLabelValues(id).Add(float64(len(event.Payload)))
 		return m.broker.Publish(topic, event)
 	})
