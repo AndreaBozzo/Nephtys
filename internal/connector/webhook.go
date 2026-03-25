@@ -142,7 +142,11 @@ func (w *WebhookSource) handleWebhook(publish PublishFunc) http.HandlerFunc {
 			http.Error(res, "Bad Request or Payload Too Large", http.StatusBadRequest)
 			return
 		}
-		defer req.Body.Close()
+		defer func() {
+			if err := req.Body.Close(); err != nil {
+				w.logger.Warn("Failed to close webhook body", "error", err)
+			}
+		}()
 
 		if len(body) == 0 {
 			http.Error(res, "Empty Body", http.StatusBadRequest)

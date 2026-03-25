@@ -27,7 +27,7 @@ func startWSServer(t *testing.T, messages []string) *httptest.Server {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		for _, msg := range messages {
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
@@ -124,10 +124,7 @@ func TestWebSocket_Stop(t *testing.T) {
 
 	// Wait for connection to be established
 	deadline := time.After(2 * time.Second)
-	for {
-		if source.Status() == domain.StatusRunning {
-			break
-		}
+	for source.Status() != domain.StatusRunning {
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for running status")

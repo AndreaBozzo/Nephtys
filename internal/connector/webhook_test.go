@@ -66,7 +66,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusAccepted {
 			t.Errorf("Expected status 202, got %d", res.StatusCode)
@@ -91,7 +91,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusUnauthorized {
 			t.Errorf("Expected status 401, got %d", res.StatusCode)
@@ -111,7 +111,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusUnauthorized {
 			t.Errorf("Expected status 401, got %d", res.StatusCode)
@@ -126,7 +126,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("Expected status 405, got %d", res.StatusCode)
@@ -142,7 +142,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", res.StatusCode)
@@ -159,7 +159,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusAccepted {
 			t.Errorf("Expected status 202, got %d", res.StatusCode)

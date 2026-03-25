@@ -55,7 +55,7 @@ func TestGrpcSource_StreamEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	client := pb.NewStreamerClient(conn)
 
