@@ -119,7 +119,9 @@ func (s *SSESource) Start(ctx context.Context, publish PublishFunc) error {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			s.logger.Error("Unexpected status code", "status", resp.StatusCode)
 			s.setStatus(domain.StatusError)
-			resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				s.logger.Warn("Failed to close response body", "error", err)
+			}
 			attempt++
 			continue
 		}
@@ -129,7 +131,9 @@ func (s *SSESource) Start(ctx context.Context, publish PublishFunc) error {
 		attempt = 0 // reset on successful connection
 
 		err = s.readLoop(ctx, resp, publish)
-		resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			s.logger.Warn("Failed to close response body", "error", closeErr)
+		}
 
 		if ctx.Err() != nil {
 			s.setStatus(domain.StatusStopped)

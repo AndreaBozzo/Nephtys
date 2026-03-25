@@ -19,27 +19,29 @@ import (
 // It persists stream configurations to a JetStream KV store so streams
 // survive restarts.
 type StreamManager struct {
-	mu           sync.RWMutex
-	sources      map[string]connector.StreamSource
-	pipelineRefs map[string]*atomic.Pointer[pipeline.Handler]
-	cancels      map[string]context.CancelFunc
-	dones        map[string]chan struct{}
-	broker       *broker.Broker
-	store        *store.StreamStore // nil in tests
-	logger       *slog.Logger
+	mu              sync.RWMutex
+	sources         map[string]connector.StreamSource
+	pipelineRefs    map[string]*atomic.Pointer[pipeline.Handler]
+	pipelineCancels map[string]context.CancelFunc // cancels batch goroutines on pipeline swap
+	cancels         map[string]context.CancelFunc
+	dones           map[string]chan struct{}
+	broker          *broker.Broker
+	store           *store.StreamStore // nil in tests
+	logger          *slog.Logger
 }
 
 // NewStreamManager creates a manager backed by the given broker and store.
 // The store may be nil (e.g. in unit tests), in which case persistence is disabled.
 func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager {
 	return &StreamManager{
-		sources:      make(map[string]connector.StreamSource),
-		pipelineRefs: make(map[string]*atomic.Pointer[pipeline.Handler]),
-		cancels:      make(map[string]context.CancelFunc),
-		dones:        make(map[string]chan struct{}),
-		broker:       brk,
-		store:        st,
-		logger:       slog.With("component", "manager"),
+		sources:         make(map[string]connector.StreamSource),
+		pipelineRefs:    make(map[string]*atomic.Pointer[pipeline.Handler]),
+		pipelineCancels: make(map[string]context.CancelFunc),
+		cancels:         make(map[string]context.CancelFunc),
+		dones:           make(map[string]chan struct{}),
+		broker:          brk,
+		store:           st,
+		logger:          slog.With("component", "manager"),
 	}
 }
 
@@ -85,6 +87,10 @@ func (m *StreamManager) Remove(id string) error {
 	if cancel, ok := m.cancels[id]; ok {
 		cancel()
 	}
+	// Cancel pipeline context (stops batch goroutines)
+	if pipeCancel, ok := m.pipelineCancels[id]; ok {
+		pipeCancel()
+	}
 
 	// Wait for the source's goroutine to finish shutting down
 	if done, ok := m.dones[id]; ok {
@@ -93,6 +99,7 @@ func (m *StreamManager) Remove(id string) error {
 
 	delete(m.sources, id)
 	delete(m.pipelineRefs, id)
+	delete(m.pipelineCancels, id)
 	delete(m.cancels, id)
 	delete(m.dones, id)
 
@@ -143,17 +150,27 @@ func (m *StreamManager) Restore() error {
 
 // UpdatePipeline hot-swaps the pipeline config for a running stream.
 func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineConfig) error {
-	m.mu.RLock()
+	m.mu.Lock()
 	atomicRef, exists := m.pipelineRefs[id]
-	m.mu.RUnlock()
-
 	if !exists {
+		m.mu.Unlock()
 		return fmt.Errorf("source %q not found", id)
 	}
 
+	// Cancel the old pipeline's batch goroutine (if any)
+	if oldCancel, ok := m.pipelineCancels[id]; ok {
+		oldCancel()
+	}
+
+	// Create a new context for the replacement pipeline
+	pipeCtx, pipeCancel := context.WithCancel(context.Background())
+	m.pipelineCancels[id] = pipeCancel
+	m.mu.Unlock()
+
 	// Update the running handler atomically
-	pipe := pipeline.BuildFromConfig(id, pipelineCfg)
+	pipe := pipeline.BuildFromConfig(pipeCtx, id, pipelineCfg)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
+		telemetry.EventsPublished.WithLabelValues(id).Inc()
 		telemetry.BytesPublished.WithLabelValues(id).Add(float64(len(event.Payload)))
 		return m.broker.Publish(topic, event)
 	})
@@ -193,6 +210,10 @@ func (m *StreamManager) StopAll() {
 		if cancel, ok := m.cancels[id]; ok {
 			cancel()
 		}
+		// Cancel pipeline context (stops batch goroutines)
+		if pipeCancel, ok := m.pipelineCancels[id]; ok {
+			pipeCancel()
+		}
 
 		if done, ok := m.dones[id]; ok {
 			wg.Add(1)
@@ -209,6 +230,7 @@ func (m *StreamManager) StopAll() {
 
 	m.sources = make(map[string]connector.StreamSource)
 	m.pipelineRefs = make(map[string]*atomic.Pointer[pipeline.Handler])
+	m.pipelineCancels = make(map[string]context.CancelFunc)
 	m.cancels = make(map[string]context.CancelFunc)
 	m.dones = make(map[string]chan struct{})
 }
@@ -218,12 +240,16 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 
+	// Pipeline gets its own context so batch goroutines can be cancelled independently
+	pipeCtx, pipeCancel := context.WithCancel(context.Background())
+
 	m.sources[id] = source
 	m.cancels[id] = cancel
+	m.pipelineCancels[id] = pipeCancel
 	m.dones[id] = done
 
 	// Build initial handler
-	pipe := pipeline.BuildFromConfig(id, cfg.Pipeline)
+	pipe := pipeline.BuildFromConfig(pipeCtx, id, cfg.Pipeline)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
 		telemetry.EventsPublished.WithLabelValues(id).Inc()
 		telemetry.BytesPublished.WithLabelValues(id).Add(float64(len(event.Payload)))

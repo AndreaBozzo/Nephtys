@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -71,7 +72,9 @@ func (w *WebhookSource) setStatus(s domain.SourceStatus) {
 
 // Start boots the HTTP server and processes incoming post requests.
 func (w *WebhookSource) Start(ctx context.Context, publish PublishFunc) error {
+	w.mu.Lock()
 	ctx, w.cancel = context.WithCancel(ctx)
+	w.mu.Unlock()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(w.config.Path, w.handleWebhook(publish))
@@ -123,7 +126,7 @@ func (w *WebhookSource) handleWebhook(publish PublishFunc) http.HandlerFunc {
 		if w.config.AuthToken != "" {
 			authHeader := req.Header.Get("Authorization")
 			expected := "Bearer " + w.config.AuthToken
-			if authHeader != expected {
+			if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) != 1 {
 				w.logger.Warn("Unauthorized webhook access attempt")
 				http.Error(res, "Unauthorized", http.StatusUnauthorized)
 				return
@@ -139,7 +142,11 @@ func (w *WebhookSource) handleWebhook(publish PublishFunc) http.HandlerFunc {
 			http.Error(res, "Bad Request or Payload Too Large", http.StatusBadRequest)
 			return
 		}
-		defer req.Body.Close()
+		defer func() {
+			if err := req.Body.Close(); err != nil {
+				w.logger.Warn("Failed to close webhook body", "error", err)
+			}
+		}()
 
 		if len(body) == 0 {
 			http.Error(res, "Empty Body", http.StatusBadRequest)
@@ -173,7 +180,10 @@ func (w *WebhookSource) handleWebhook(publish PublishFunc) http.HandlerFunc {
 
 // Stop shuts down the webhook HTTP server.
 func (w *WebhookSource) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	w.mu.RLock()
+	cancel := w.cancel
+	w.mu.RUnlock()
+	if cancel != nil {
+		cancel()
 	}
 }

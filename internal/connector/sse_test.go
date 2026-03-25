@@ -26,17 +26,32 @@ func TestSSESource_Success(t *testing.T) {
 		}
 
 		// Send an event with type
-		fmt.Fprintf(w, "event: custom_event\n")
-		fmt.Fprintf(w, "data: {\"foo\":\"bar\"}\n\n")
+		if _, err := fmt.Fprintf(w, "event: custom_event\n"); err != nil {
+			t.Errorf("failed to write SSE event type: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, "data: {\"foo\":\"bar\"}\n\n"); err != nil {
+			t.Errorf("failed to write SSE event payload: %v", err)
+			return
+		}
 		flusher.Flush()
 
 		// Send a simple data event (no type)
-		fmt.Fprintf(w, "data: {\"msg\":\"hello\"}\n\n")
+		if _, err := fmt.Fprintf(w, "data: {\"msg\":\"hello\"}\n\n"); err != nil {
+			t.Errorf("failed to write SSE message: %v", err)
+			return
+		}
 		flusher.Flush()
 
 		// Send multi-line data (must evaluate to valid JSON)
-		fmt.Fprintf(w, "data: {\n")
-		fmt.Fprintf(w, "data: \"multi\":\"\\nline\"}\n\n")
+		if _, err := fmt.Fprintf(w, "data: {\n"); err != nil {
+			t.Errorf("failed to write SSE multiline prefix: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, "data: \"multi\":\"\\nline\"}\n\n"); err != nil {
+			t.Errorf("failed to write SSE multiline payload: %v", err)
+			return
+		}
 		flusher.Flush()
 
 		// Keep connection open
@@ -149,7 +164,10 @@ func TestSSESource_Reconnect(t *testing.T) {
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
-		fmt.Fprintf(w, "data: {\"status\":\"ok\"}\n\n")
+		if _, err := fmt.Fprintf(w, "data: {\"status\":\"ok\"}\n\n"); err != nil {
+			t.Errorf("failed to write reconnect SSE message: %v", err)
+			return
+		}
 		flusher.Flush()
 
 		// Keep alive until test interrupts

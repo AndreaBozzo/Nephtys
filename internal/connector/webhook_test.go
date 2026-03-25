@@ -11,6 +11,32 @@ import (
 	"nephtys/internal/domain"
 )
 
+func TestWebhookSource_IDAndDefaults(t *testing.T) {
+	src := NewWebhookSource("wh-id", "t", nil)
+	if src.ID() != "wh-id" {
+		t.Errorf("expected wh-id, got %s", src.ID())
+	}
+	// Nil config should default to port 8081 and path /webhook
+	if src.config.Port != "8081" {
+		t.Errorf("expected default port 8081, got %s", src.config.Port)
+	}
+	if src.config.Path != "/webhook" {
+		t.Errorf("expected default path /webhook, got %s", src.config.Path)
+	}
+
+	// Empty config fields should also get defaults
+	src2 := NewWebhookSource("wh-id2", "t", &domain.WebhookConfig{})
+	if src2.config.Port != "8081" {
+		t.Errorf("expected default port 8081, got %s", src2.config.Port)
+	}
+
+	// Path without leading slash should be prefixed
+	src3 := NewWebhookSource("wh-id3", "t", &domain.WebhookConfig{Port: "9090", Path: "hook"})
+	if src3.config.Path != "/hook" {
+		t.Errorf("expected /hook, got %s", src3.config.Path)
+	}
+}
+
 func TestWebhookSource(t *testing.T) {
 	// Create common mock setup
 	config := &domain.WebhookConfig{
@@ -40,7 +66,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusAccepted {
 			t.Errorf("Expected status 202, got %d", res.StatusCode)
@@ -65,7 +91,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusUnauthorized {
 			t.Errorf("Expected status 401, got %d", res.StatusCode)
@@ -85,7 +111,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusUnauthorized {
 			t.Errorf("Expected status 401, got %d", res.StatusCode)
@@ -100,7 +126,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("Expected status 405, got %d", res.StatusCode)
@@ -116,7 +142,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", res.StatusCode)
@@ -133,7 +159,7 @@ func TestWebhookSource(t *testing.T) {
 		handler(w, req)
 
 		res := w.Result()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		if res.StatusCode != http.StatusAccepted {
 			t.Errorf("Expected status 202, got %d", res.StatusCode)

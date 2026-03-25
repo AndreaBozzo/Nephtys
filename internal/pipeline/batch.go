@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"nephtys/internal/domain"
@@ -9,7 +11,8 @@ import (
 
 // NewBatch creates a middleware that buffers events and flushes them
 // periodically or when a maximum size is reached.
-func NewBatch(cfg *domain.BatchConfig) Middleware {
+// The provided context controls the lifetime of the background worker goroutine.
+func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 	if cfg == nil || !cfg.Enabled {
 		return nil
 	}
@@ -61,12 +64,17 @@ func NewBatch(cfg *domain.BatchConfig) Middleware {
 				}
 
 				// Using the last seen topic for the batch
-				_ = next(lastTopic, batchedEvent)
+				if err := next(lastTopic, batchedEvent); err != nil {
+					slog.Error("batch flush failed", "topic", lastTopic, "error", err)
+				}
 				batch = batch[:0] // Reset batch, keeping allocated capacity
 			}
 
 			for {
 				select {
+				case <-ctx.Done():
+					flush()
+					return
 				case te, ok := <-eventCh:
 					if !ok {
 						flush()
@@ -86,9 +94,12 @@ func NewBatch(cfg *domain.BatchConfig) Middleware {
 
 		// The returned handler just pushes to the channel
 		return func(topic string, event domain.StreamEvent) error {
-			// Using the channel effectively decouples ingestion from processing
-			eventCh <- topicEvent{topic: topic, event: event}
-			return nil
+			select {
+			case eventCh <- topicEvent{topic: topic, event: event}:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -223,7 +224,7 @@ func TestBuilderFullConfig(t *testing.T) {
 		Dedup:  &domain.DedupConfig{Enabled: true},
 	}
 
-	pipe := BuildFromConfig("test", cfg)
+	pipe := BuildFromConfig(context.Background(), "test", cfg)
 
 	var res *domain.StreamEvent
 	sink := func(topic string, e domain.StreamEvent) error {

@@ -12,6 +12,16 @@ import (
 	pb "nephtys/internal/grpc/streamer"
 )
 
+func TestGrpcSource_IDAndStatus(t *testing.T) {
+	src := NewGrpcSource("grpc-id-test", "topic", nil)
+	if src.ID() != "grpc-id-test" {
+		t.Errorf("expected grpc-id-test, got %s", src.ID())
+	}
+	if src.Status() != domain.StatusIdle {
+		t.Errorf("expected idle, got %s", src.Status())
+	}
+}
+
 func TestGrpcSource_StreamEvents(t *testing.T) {
 	config := &domain.GrpcConfig{
 		Port: "50055", // Hardcoded port for test
@@ -45,7 +55,7 @@ func TestGrpcSource_StreamEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	client := pb.NewStreamerClient(conn)
 

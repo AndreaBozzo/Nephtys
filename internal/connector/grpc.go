@@ -2,7 +2,9 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -118,7 +120,7 @@ func (g *GrpcSource) StreamEvents(stream pb.Streamer_StreamEventsServer) error {
 		req, err := stream.Recv()
 		if err != nil {
 			// io.EOF is returned when the client closes the stream gracefully.
-			if err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) {
 				return stream.SendAndClose(&pb.IngestResponse{
 					ProcessedCount: processedCount,
 				})
