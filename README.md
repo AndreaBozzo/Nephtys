@@ -4,6 +4,7 @@
   <p><strong>Real-time data stream connector for the data economy</strong></p>
   <p>
     <a href="https://github.com/AndreaBozzo/Nephtys/actions"><img src="https://github.com/AndreaBozzo/Nephtys/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://codecov.io/gh/AndreaBozzo/Nephtys"><img src="https://codecov.io/gh/AndreaBozzo/Nephtys/branch/main/graph/badge.svg" alt="Codecov"></a>
     <a href="https://github.com/AndreaBozzo/Nephtys/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
     <a href="https://discord.gg/fztdKSPXSz"><img src="https://img.shields.io/discord/1469399961987711161?color=5865F2&logo=discord&logoColor=white&label=Discord" alt="Discord"></a>
   </p>
