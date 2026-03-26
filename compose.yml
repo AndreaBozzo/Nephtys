@@ -23,13 +23,24 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
 
+  renderer:
+    image: grafana/grafana-image-renderer:latest
+    container_name: nephtys_renderer
+    ports:
+      - "8081:8081"
+
   grafana:
     image: grafana/grafana:latest
     container_name: nephtys_grafana
     ports:
       - "3000:3000"
+    environment:
+      - GF_RENDERING_SERVER_URL=http://renderer:8081/render
+      - GF_RENDERING_CALLBACK_URL=http://grafana:3000/
+      - GF_LOG_FILTERS=rendering:debug
     depends_on:
       - prometheus
+      - renderer
 
 volumes:
   nats-data:
