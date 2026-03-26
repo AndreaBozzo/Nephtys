@@ -42,6 +42,8 @@ Nephtys is the conceptual sibling of [Ceres](https://github.com/AndreaBozzo/Cere
 
 Where batch jobs fail to provide the immediacy required by algorithmic trading, live monitoring, or real-time ML pipelines, Nephtys steps in to ensure no event is missed, dropping it securely into your reliable, local NATS infrastructure.
 
+Nephtys also happens to be extremely good at feeding clean, polished, up-to-date data to any agent-based system, allowing them to act upon real-time data. This is incidental and wasn't planned before I started using it with my agents.
+
 ## Key Features
 
 - **Real-Time Ingestion:** Supports multiple live protocols securely.
