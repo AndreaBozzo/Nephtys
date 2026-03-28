@@ -118,12 +118,12 @@ make run
 
 ## Usage
 
-Start your local Nephtys instance with `make run`. The REST API listens on `:3000` (by default) and connects to NATS at `:4222`.
+Start your local Nephtys instance with `make run`. The REST API listens on `:3002` (by default) and connects to NATS at `:4222`.
 
 ### 1. Register a WebSocket Stream dynamically
 
 ```bash
-curl -X POST http://localhost:3000/v1/streams \
+curl -X POST http://localhost:3002/v1/streams \
   -H "Content-Type: application/json" \
   -d '{
     "id": "binance_btc",
@@ -142,14 +142,14 @@ curl -X POST http://localhost:3000/v1/streams \
 ### 2. Verify Active Streams
 
 ```bash
-curl http://localhost:3000/v1/streams
+curl http://localhost:3002/v1/streams
 ```
 
 ### 3. Remove a Stream
 
 ```bash
 # Gracefully stops the worker routines and removes the active configuration
-curl -X DELETE http://localhost:3000/v1/streams/binance_btc
+curl -X DELETE http://localhost:3002/v1/streams/binance_btc
 ```
 
 ## REST API
@@ -168,7 +168,7 @@ Control the global behavior of the instance via environment variables.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NATS_URL` | `nats://localhost:4222` | Broker endpoint address |
-| `NEPHTYS_PORT` | `3000` | Port for the management REST API |
+| `NEPHTYS_PORT` | `3002` | Port for the management REST API |
 | `NEPHTYS_LOG_LEVEL` | `info` | Operational logging verbosity (`debug`, `info`, `warn`, `error`) |
 
 ## Supported Connectors
