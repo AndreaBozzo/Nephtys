@@ -30,6 +30,8 @@ Nephtys ingests live data streams (WebSocket, webhooks, Server-Sent Events, gRPC
 - [Persistence](#persistence)
 - [Development](#development)
 - [Contributing](#contributing)
+- [Citation](#citation)
+- [License](#license)
 
 ---
 
@@ -216,6 +218,26 @@ make docker-down  # Destroy active container dependencies
 ## Contributing
 
 Contributions, feature requests, and edge-platform integrations are welcomed enthusiastically! Please refer to the [CONTRIBUTING.md](docs/CONTRIBUTING.md) to kickstart your environment and submit improvements cleanly.
+
+## Citation
+
+If you use Nephtys in your research, please cite the following paper (under review):
+
+> **Andrea Bozzo. "Nephtys: Lightweight Edge Connector for Bandwidth-Efficient Ingestion of Urban Sensor Streams". IEEE UIC 2026.**
+
+Companion repository and evaluation material: [AndreaBozzo/uic2026-nephtys](https://github.com/AndreaBozzo/uic2026-nephtys/)
+
+### BibTeX
+
+```bibtex
+@inproceedings{bozzo2026nephtys,
+  author    = {Bozzo, Andrea},
+  title     = {Nephtys: Lightweight Edge Connector for Bandwidth-Efficient Ingestion of Urban Sensor Streams},
+  booktitle = {IEEE International Conference on Ubiquitous Intelligence and Computing (UIC)},
+  year      = {2026},
+  note      = {Short Paper, Under Review}
+}
+```
 
 ## License
 
