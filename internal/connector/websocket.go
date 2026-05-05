@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -140,16 +141,63 @@ func (w *WebSocketSource) readLoop(ctx context.Context, conn *websocket.Conn, pu
 			return err
 		}
 
+		eventType, timestamp, seq := inferWebSocketMetadata(message, time.Now().UnixMilli())
 		event := domain.StreamEvent{
 			Source:    w.id,
-			Type:      "websocket_message",
-			Timestamp: time.Now().UnixMilli(),
+			Type:      eventType,
+			Timestamp: timestamp,
+			Seq:       seq,
 			Payload:   json.RawMessage(message),
 		}
 
 		if err := publish(w.topic, event); err != nil {
 			w.logger.Error("Publish failed", "error", err)
 		}
+	}
+}
+
+func inferWebSocketMetadata(message []byte, fallbackTimestamp int64) (string, int64, int64) {
+	eventType := "websocket_message"
+	timestamp := fallbackTimestamp
+	var seq int64
+
+	decoder := json.NewDecoder(bytes.NewReader(message))
+	decoder.UseNumber()
+
+	var obj map[string]any
+	if err := decoder.Decode(&obj); err != nil {
+		return eventType, timestamp, seq
+	}
+
+	if rawType, ok := obj["e"].(string); ok && rawType != "" {
+		eventType = rawType
+	}
+
+	if eventTime, ok := int64FromAny(obj["E"]); ok && eventTime > 0 {
+		timestamp = eventTime
+	}
+
+	for _, key := range []string{"seq", "u", "lastUpdateId", "t"} {
+		if value, ok := int64FromAny(obj[key]); ok && value > 0 {
+			seq = value
+			break
+		}
+	}
+
+	return eventType, timestamp, seq
+}
+
+func int64FromAny(value any) (int64, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		n, err := v.Int64()
+		return n, err == nil
+	case float64:
+		return int64(v), true
+	case int64:
+		return v, true
+	default:
+		return 0, false
 	}
 }
 

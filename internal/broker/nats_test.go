@@ -122,6 +122,56 @@ func TestPublish_RoundTrip(t *testing.T) {
 	if received.Type != "test-event" {
 		t.Errorf("expected type test-event, got %s", received.Type)
 	}
+	if msg.Header.Get("Content-Type") != domain.ContentTypeJSON {
+		t.Errorf("expected JSON content type header, got %q", msg.Header.Get("Content-Type"))
+	}
+}
+
+func TestPublish_BinaryPayload(t *testing.T) {
+	srv := startTestServer(t)
+
+	brk, err := Connect(srv.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer brk.Close()
+
+	if err := brk.EnsureStream("BINARY", []string{"bin.>"}); err != nil {
+		t.Fatalf("ensure stream: %v", err)
+	}
+
+	event := domain.StreamEvent{
+		Source:      "test-source",
+		Type:        "arrow-batch",
+		Timestamp:   time.Now().UnixMilli(),
+		Seq:         42,
+		ContentType: domain.ContentTypeArrowStream,
+		Data:        []byte{0xff, 0x00, 0x01, 0x02},
+	}
+
+	if err := brk.Publish("bin.test", event); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	sub, err := brk.js.SubscribeSync("bin.test")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("next msg: %v", err)
+	}
+
+	if string(msg.Data) != string(event.Data) {
+		t.Errorf("expected raw binary payload %v, got %v", event.Data, msg.Data)
+	}
+	if msg.Header.Get("Content-Type") != domain.ContentTypeArrowStream {
+		t.Errorf("expected Arrow content type, got %q", msg.Header.Get("Content-Type"))
+	}
+	if msg.Header.Get("X-Nephtys-Seq") != "42" {
+		t.Errorf("expected sequence header 42, got %q", msg.Header.Get("X-Nephtys-Seq"))
+	}
 }
 
 func TestClose(t *testing.T) {

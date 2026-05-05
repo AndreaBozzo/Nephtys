@@ -106,6 +106,49 @@ func TestWebSocket_ReceivesMessages(t *testing.T) {
 	}
 }
 
+func TestWebSocket_InferBinanceMetadata(t *testing.T) {
+	messages := []string{`{"e":"trade","E":1700000000001,"t":12345,"s":"BTCUSDT","p":"42000"}`}
+	srv := startWSServer(t, messages)
+
+	source := NewWebSocketSource("binance_btc", wsURL(srv.URL), "test.topic")
+
+	received := make(chan domain.StreamEvent, 1)
+	publish := PublishFunc(func(topic string, event domain.StreamEvent) error {
+		received <- event
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- source.Start(ctx, publish)
+	}()
+
+	select {
+	case evt := <-received:
+		if evt.Type != "trade" {
+			t.Fatalf("expected Binance event type trade, got %s", evt.Type)
+		}
+		if evt.Timestamp != 1700000000001 {
+			t.Fatalf("expected Binance event timestamp, got %d", evt.Timestamp)
+		}
+		if evt.Seq != 12345 {
+			t.Fatalf("expected trade id as sequence, got %d", evt.Seq)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for message")
+	}
+
+	cancel()
+	source.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for source to stop")
+	}
+}
+
 func TestWebSocket_Stop(t *testing.T) {
 	// Server that stays open
 	srv := startWSServer(t, nil)

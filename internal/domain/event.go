@@ -3,12 +3,27 @@ package domain
 
 import "encoding/json"
 
+const (
+	// ContentTypeJSON is the default StreamEvent envelope encoding.
+	ContentTypeJSON = "application/json"
+
+	// ContentTypeArrowStream identifies Apache Arrow IPC stream payloads.
+	ContentTypeArrowStream = "application/vnd.apache.arrow.stream"
+)
+
 // StreamEvent is the standard envelope Nephtys publishes to the broker.
 type StreamEvent struct {
-	Source    string          `json:"source"`
-	Type      string          `json:"type"`
-	Timestamp int64           `json:"timestamp"`
-	Payload   json.RawMessage `json:"payload"`
+	Source      string          `json:"source"`
+	Type        string          `json:"type"`
+	Timestamp   int64           `json:"timestamp"`
+	Seq         int64           `json:"seq,omitempty"`
+	ContentType string          `json:"content_type,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+
+	// Data carries binary payloads such as Arrow IPC. It is published directly
+	// when ContentType is not application/json and is intentionally not encoded
+	// into the JSON envelope.
+	Data []byte `json:"-"`
 }
 
 // SourceStatus represents the current state of a stream source.

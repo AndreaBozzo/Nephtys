@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -83,14 +84,49 @@ func (b *Broker) EnsureStream(name string, subjects []string) error {
 }
 
 // Publish serializes and publishes a StreamEvent to JetStream.
-// Events are durably stored according to the stream's retention policy.
+// JSON events are published as the standard envelope. Binary events are
+// published directly with Content-Type and sequence headers.
 func (b *Broker) Publish(topic string, event domain.StreamEvent) error {
-	data, err := json.Marshal(event)
+	data, contentType, err := encodeEvent(event)
 	if err != nil {
-		return fmt.Errorf("marshal event: %w", err)
+		return err
 	}
-	_, err = b.js.Publish(topic, data)
+
+	msg := &nats.Msg{
+		Subject: topic,
+		Data:    data,
+		Header:  nats.Header{},
+	}
+	if contentType != "" {
+		msg.Header.Set("Content-Type", contentType)
+	}
+	if event.Seq > 0 {
+		msg.Header.Set("X-Nephtys-Seq", strconv.FormatInt(event.Seq, 10))
+	}
+
+	_, err = b.js.PublishMsg(msg)
 	return err
+}
+
+func encodeEvent(event domain.StreamEvent) ([]byte, string, error) {
+	contentType := event.ContentType
+	if contentType == "" {
+		contentType = domain.ContentTypeJSON
+	}
+
+	if contentType == domain.ContentTypeJSON {
+		data, err := json.Marshal(event)
+		if err != nil {
+			return nil, "", fmt.Errorf("marshal event: %w", err)
+		}
+		return data, contentType, nil
+	}
+
+	if len(event.Data) == 0 {
+		return nil, "", fmt.Errorf("binary event %q has empty data", event.Type)
+	}
+
+	return event.Data, contentType, nil
 }
 
 // JetStream returns the underlying JetStream context for advanced use
