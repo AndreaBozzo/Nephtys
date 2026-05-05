@@ -149,6 +149,22 @@ func TestWebSocket_InferBinanceMetadata(t *testing.T) {
 	}
 }
 
+func TestInferWebSocketMetadata_DepthUpdateUsesExchangeSequence(t *testing.T) {
+	message := []byte(`{"e":"depthUpdate","E":1700000000100,"U":100,"u":105,"s":"BTCUSDT"}`)
+
+	eventType, timestamp, seq := inferWebSocketMetadata(message, 123)
+
+	if eventType != "depthUpdate" {
+		t.Fatalf("expected depthUpdate, got %s", eventType)
+	}
+	if timestamp != 1700000000100 {
+		t.Fatalf("expected exchange timestamp, got %d", timestamp)
+	}
+	if seq != 105 {
+		t.Fatalf("expected final update id as sequence, got %d", seq)
+	}
+}
+
 func TestWebSocket_Stop(t *testing.T) {
 	// Server that stays open
 	srv := startWSServer(t, nil)
