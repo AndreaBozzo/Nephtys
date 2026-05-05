@@ -120,11 +120,14 @@ make run
 
 Start your local Nephtys instance with `make run`. The REST API listens on `:3002` (by default) and connects to NATS at `:4222`.
 
+If `NEPHTYS_ADMIN_TOKEN` is set, stream-management routes require `Authorization: Bearer <token>`. If it is unset, those protected endpoints intentionally return `403`, so the header examples below apply only when auth is enabled.
+
 ### 1. Register a WebSocket Stream dynamically
 
 ```bash
 curl -X POST http://localhost:3002/v1/streams \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $NEPHTYS_ADMIN_TOKEN" \
   -d '{
     "id": "binance_btc",
     "kind": "websocket",
@@ -132,7 +135,7 @@ curl -X POST http://localhost:3002/v1/streams \
     "topic": "nephtys.stream.crypto.btc",
     "pipeline": {
       "filter": { "match_types": ["trade"] },
-      "transform": { "mapping": { "price": "data.p", "qty": "data.q" } },
+      "transform": { "mapping": { "price": "p", "qty": "q", "symbol": "s" } },
       "dedup": { "enabled": true, "ttl": "1m" },
       "enrich": { "tags": { "env": "prod" } }
     }
@@ -142,15 +145,33 @@ curl -X POST http://localhost:3002/v1/streams \
 ### 2. Verify Active Streams
 
 ```bash
-curl http://localhost:3002/v1/streams
+curl \
+  -H "Authorization: Bearer $NEPHTYS_ADMIN_TOKEN" \
+  http://localhost:3002/v1/streams
 ```
 
 ### 3. Remove a Stream
 
 ```bash
 # Gracefully stops the worker routines and removes the active configuration
-curl -X DELETE http://localhost:3002/v1/streams/binance_btc
+curl -X DELETE http://localhost:3002/v1/streams/binance_btc \
+  -H "Authorization: Bearer $NEPHTYS_ADMIN_TOKEN"
 ```
+
+### WebSocket metadata inference
+
+For JSON WebSocket payloads, Nephtys infers useful envelope metadata without forcing an exchange-specific schema into the connector:
+- `e` becomes the event `type`
+- `E` becomes the envelope `timestamp`
+- `seq`, `u`, `lastUpdateId`, or `t` become the envelope `seq`
+
+This keeps the connector generic while still giving downstream consumers enough sequencing information to build local state safely.
+
+### Binary payloads
+
+When a connector emits raw binary data, Nephtys publishes it directly to NATS instead of JSON-encoding it first. The message carries:
+- `Content-Type` header, for example `application/vnd.apache.arrow.stream`
+- `X-Nephtys-Seq` header when sequence metadata is available
 
 ## REST API
 
@@ -160,6 +181,7 @@ curl -X DELETE http://localhost:3002/v1/streams/binance_btc
 | `GET` | `/v1/streams` | List all active streams and operational statuses |
 | `POST` | `/v1/streams` | Register, save, and start a new stream |
 | `DELETE` | `/v1/streams/{id}` | Halt stream ingest and remove it from configuration |
+| `PUT` | `/v1/streams/{id}/pipeline` | Update a running stream pipeline |
 
 ## Configuration
 
@@ -169,6 +191,7 @@ Control the global behavior of the instance via environment variables.
 |----------|---------|-------------|
 | `NATS_URL` | `nats://localhost:4222` | Broker endpoint address |
 | `NEPHTYS_PORT` | `3002` | Port for the management REST API |
+| `NEPHTYS_ADMIN_TOKEN` | unset | Optional bearer token for stream-management endpoints |
 | `NEPHTYS_LOG_LEVEL` | `info` | Operational logging verbosity (`debug`, `info`, `warn`, `error`) |
 
 ## Supported Connectors
