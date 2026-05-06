@@ -1,0 +1,27 @@
+{
+  "id": "wikimedia_recentchange",
+  "kind": "sse",
+  "url": "https://stream.wikimedia.org/v2/stream/recentchange",
+  "topic": "nephtys.stream.events.wikimedia.recentchange",
+  "sse": {
+    "headers": {
+      "User-Agent": "nephtys-example/1.0"
+    }
+  },
+  "pipeline": {
+    "filter": {
+      "match_types": ["edit", "new"]
+    },
+    "enrich": {
+      "tags": {
+        "source": "wikimedia",
+        "kind": "edit-event"
+      }
+    },
+    "batch": {
+      "enabled": true,
+      "max_batch_size": 50,
+      "flush_interval": "2s"
+    }
+  }
+}

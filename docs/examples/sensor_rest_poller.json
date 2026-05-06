@@ -1,0 +1,23 @@
+{
+  "id": "openmeteo_bologna",
+  "kind": "rest_poller",
+  "url": "https://api.open-meteo.com/v1/forecast?latitude=44.49&longitude=11.34&current=temperature_2m,relative_humidity_2m,wind_speed_10m",
+  "topic": "nephtys.stream.sensors.weather.bologna",
+  "rest_poller": {
+    "interval": "60s",
+    "method": "GET"
+  },
+  "pipeline": {
+    "dedup": {
+      "enabled": true,
+      "ttl": "5m"
+    },
+    "enrich": {
+      "tags": {
+        "source": "open-meteo",
+        "city": "bologna",
+        "kind": "weather"
+      }
+    }
+  }
+}

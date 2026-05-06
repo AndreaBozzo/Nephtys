@@ -19,6 +19,7 @@ Nephtys ingests live data streams (WebSocket, webhooks, Server-Sent Events, gRPC
 ## Table of Contents
 
 - [Why Nephtys?](#why-nephtys)
+- [Use Cases](#use-cases)
 - [Key Features](#key-features)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
@@ -45,16 +46,27 @@ Nephtys is the conceptual sibling of [Ceres](https://github.com/AndreaBozzo/Cere
 
 Where batch jobs fail to provide the immediacy required by algorithmic trading, live monitoring, or real-time ML pipelines, Nephtys steps in to ensure no event is missed, dropping it securely into your reliable, local NATS infrastructure.
 
-Beyond its core design, Nephtys has proven exceptionally effective at feeding high-fidelity, real-time data to AI agents and autonomous systems. This capability was an incidental discovery—the clean normalization and durable JetStream delivery provide the perfect foundation for agents to observe and act upon live environments with zero latency.
+Beyond its core design, Nephtys has proven effective at feeding real-time data to AI agents and autonomous systems. The clean normalization and durable JetStream delivery give agents a stable substrate for observing and acting on live environments.
+
+## Use Cases
+
+Nephtys is intentionally generic — it doesn't care what kind of stream you point it at, as long as it's real-time. Common profiles:
+
+- **Urban sensor streams** *(primary framing of the [UIC 2026 paper](#citation))* — air-quality monitors, weather stations, traffic counters, smart-city telemetry. Typically polled (REST) or pushed (SSE/MQTT-over-WS), low-to-moderate event rate, durable archive needed.
+- **Market data** — exchange WebSocket feeds for trades, depth, order book snapshots. High event rate, sequencing matters, used by downstream trading agents (e.g. [Mercury](https://github.com/AndreaBozzo/Mercury)).
+- **Public event streams** — Wikimedia recent-changes, GitHub events, transit feeds. SSE or WebSocket, useful for monitoring and ML pipelines.
+- **AI agent telemetry** — feeding live observations to autonomous agents that need a normalized, durable event substrate.
+
+See [`docs/examples/`](docs/examples/) for runnable configurations covering each profile.
 
 ## Key Features
 
-- **Real-Time Ingestion:** Supports multiple live protocols securely.
-- **Durable Storage:** Backed by NATS JetStream; stream configurations and event payloads persist across restarts seamlessly.
-- **Dynamic Middlewares:** Filter, transform, deduplicate, and enrich payloads on the fly, configured via JSON upon stream creation.
-- **Zero Extra Infrastructure:** Runs completely independently alongside NATS. No complex databases required.
-- **Self-Healing:** Interrupted streams automatically resume and recover using rigorous backoff strategies.
-- **Edge Friendly:** Low resource footprint written in Go, perfectly suited for deployment on Edge AI or remote clusters.
+- **Real-time ingestion** across WebSocket, SSE, REST polling, gRPC, and webhook sources.
+- **Durable persistence** via NATS JetStream — both event payloads and stream configurations survive restarts.
+- **Configurable pipelines** — filter, transform, deduplicate, enrich, threshold, and batch payloads on the fly via JSON config.
+- **No extra infrastructure** — runs alongside NATS; no separate database, cache, or coordination service required.
+- **Self-healing connectors** — interrupted streams reconnect automatically with exponential backoff.
+- **Edge-friendly footprint** — single Go binary, low memory, suitable for resource-constrained deployments.
 
 ## Architecture
 
@@ -122,7 +134,26 @@ Start your local Nephtys instance with `make run`. The REST API listens on `:300
 
 If `NEPHTYS_ADMIN_TOKEN` is set, stream-management routes require `Authorization: Bearer <token>`. If it is unset, those protected endpoints intentionally return `403`, so the header examples below apply only when auth is enabled.
 
-### 1. Register a WebSocket Stream dynamically
+More runnable examples live in [`docs/examples/`](docs/examples/), including a Wikimedia SSE stream and a Binance WebSocket stream.
+
+### 1. Register a sensor stream (REST poller)
+
+Polls the public Open-Meteo weather API every 60 seconds and publishes normalized events to NATS. No API key required.
+
+```bash
+curl -X POST http://localhost:3002/v1/streams \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $NEPHTYS_ADMIN_TOKEN" \
+  -d @docs/examples/sensor_rest_poller.json
+```
+
+This publishes to subject `nephtys.stream.sensors.weather.bologna`. Tap it from a separate terminal:
+
+```bash
+nats sub "nephtys.stream.sensors.>"
+```
+
+### 2. Register a market-data stream (WebSocket)
 
 ```bash
 curl -X POST http://localhost:3002/v1/streams \
@@ -142,7 +173,7 @@ curl -X POST http://localhost:3002/v1/streams \
   }'
 ```
 
-### 2. Verify Active Streams
+### 3. Verify active streams
 
 ```bash
 curl \
@@ -150,10 +181,10 @@ curl \
   http://localhost:3002/v1/streams
 ```
 
-### 3. Remove a Stream
+### 4. Remove a stream
 
 ```bash
-# Gracefully stops the worker routines and removes the active configuration
+# Gracefully stops the worker and removes the persisted configuration
 curl -X DELETE http://localhost:3002/v1/streams/binance_btc \
   -H "Authorization: Bearer $NEPHTYS_ADMIN_TOKEN"
 ```
@@ -206,41 +237,44 @@ Control the global behavior of the instance via environment variables.
 
 ## Pipeline Middlewares
 
-Nephtys supports deeply customizable, configurable middlewares to process events before JetStream publication. Middlewares are defined directly within the JSON payload on stream registration:
+Pipelines are declared inline on stream registration as JSON. Each middleware is optional; they run in a fixed order (filter → transform → dedup → enrich → threshold → batch) before the event is published.
 
-- **Filter**: Discards items intelligently if they do not map to desired event targets.
-- **Transform**: Flattens nested variable mappings into cleanly structured top-level metadata values.
-- **Dedup**: Provides transient memory footprint deduplication restricting publication floods.
-- **Enrich**: Force-injects localized, static tagging markers directly to the JSON outcome.
+- **Filter** — drops events whose `type` doesn't match `match_types`.
+- **Transform** — remaps fields in the JSON payload using dot-notation paths.
+- **Dedup** — short-window LRU deduplication to suppress repeats.
+- **Enrich** — adds static tags to outgoing events.
+- **Threshold** — emits only when a numeric path changes by at least a configured delta (useful for sensor anomaly filtering).
+- **Batch** — buffers events into bounded batches before publishing.
 
 ## Persistence
 
-Nephtys embraces pure streaming infrastructure relying on **JetStream** without external database dependencies:
-- **Event Data**: Stored durably on streams with customizable 72h default retention bounds.
-- **Stream Configurations**: Synchronized rapidly into a robust KV bucket for instantaneous zero-downtime recovery upon restart.
+Nephtys uses NATS JetStream for both event durability and configuration state — no separate database is required.
+
+- **Event payloads** are written to JetStream with a 72h default retention (configurable on the broker).
+- **Stream configurations** are stored in a JetStream KV bucket and reloaded on startup, so registered streams survive restarts.
 
 ## Development
 
 ```bash
-make help       # Display all valid target commands
-make build      # Compile the main binary
-make test       # Execute test suite coverage
-make fmt        # Apply standardized style
-make vet        # Execute static analysis checking for code errors
-make all        # Run standard commit lifecycle: fmt + vet + test
+make help       # List available targets
+make build      # Build the binary
+make test       # Run the test suite
+make fmt        # Format the code (gofmt)
+make vet        # Run go vet
+make all        # Run fmt + vet + test (the standard pre-commit cycle)
 ```
 
 ### Docker Management
 
 ```bash
-make docker-build # Construct the isolated production-ready Docker image
-make docker-up    # Spin up backing services (NATS JetStream) specifically for dev
-make docker-down  # Destroy active container dependencies
+make docker-build # Build the production Docker image
+make docker-up    # Start NATS JetStream for local development
+make docker-down  # Stop and remove the local containers
 ```
 
 ## Contributing
 
-Contributions, feature requests, and edge-platform integrations are welcomed enthusiastically! Please refer to the [CONTRIBUTING.md](docs/CONTRIBUTING.md) to kickstart your environment and submit improvements cleanly.
+Contributions and issues are welcome. See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for setup instructions and the contribution workflow.
 
 ## Citation
 

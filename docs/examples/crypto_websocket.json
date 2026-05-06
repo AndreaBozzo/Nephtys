@@ -1,0 +1,28 @@
+{
+  "id": "binance_btc_trade",
+  "kind": "websocket",
+  "url": "wss://stream.binance.com:9443/ws/btcusdt@trade",
+  "topic": "nephtys.stream.crypto.btc",
+  "pipeline": {
+    "filter": {
+      "match_types": ["trade"]
+    },
+    "transform": {
+      "mapping": {
+        "price": "p",
+        "qty": "q",
+        "symbol": "s"
+      }
+    },
+    "dedup": {
+      "enabled": true,
+      "ttl": "1m"
+    },
+    "enrich": {
+      "tags": {
+        "source": "binance",
+        "kind": "trade"
+      }
+    }
+  }
+}
