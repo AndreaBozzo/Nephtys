@@ -1,39 +1,46 @@
-# golangci-lint configuration for Nephtys.
+# golangci-lint configuration for Nephtys (v2 schema).
 # Conservative starting set — catches real issues without flagging style noise.
 # Run locally: `make lint` (or `golangci-lint run`).
-
+# Migrated from v1 with `golangci-lint migrate` because v1.x is built against
+# Go 1.24 and refuses to load configs targeting Go 1.25+.
+version: "2"
 run:
-  timeout: 3m
   tests: true
-
 linters:
-  disable-all: true
+  default: none
   enable:
-    # Defaults from golangci-lint that catch real bugs.
-    - errcheck      # unchecked errors
-    - govet         # suspicious constructs
-    - ineffassign   # unused assignments
-    - staticcheck   # broad static analysis (SA*, ST*, S1*)
-    - unused        # unused code
-    # Additional, low-noise:
-    - bodyclose     # http.Response.Body must be closed
-    - misspell      # common misspellings in comments/strings
-    - unconvert     # redundant type conversions
-    - gocritic      # opinionated but generally correct findings
-
-linters-settings:
-  gocritic:
-    disabled-checks:
-      - ifElseChain
-      - singleCaseSwitch
-
+    - bodyclose
+    - errcheck
+    - gocritic
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - errcheck
+          - gocritic
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    # Test files often have intentional patterns lint would flag.
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gocritic
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
