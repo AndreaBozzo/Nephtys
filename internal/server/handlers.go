@@ -127,6 +127,12 @@ func boolToStatus(b bool) string {
 	return "disconnected"
 }
 
+// ValidateStreamConfig performs input validation on a stream configuration.
+// Exposed for use by `nephtys --config-check`.
+func ValidateStreamConfig(cfg domain.StreamSourceConfig) error {
+	return validateStreamConfig(cfg)
+}
+
 // validateStreamConfig performs input validation on a stream configuration.
 func validateStreamConfig(cfg domain.StreamSourceConfig) error {
 	if !topicPattern.MatchString(cfg.Topic) {
