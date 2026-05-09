@@ -17,6 +17,14 @@ import (
 )
 
 // GrpcSource runs a gRPC server to ingest events via client-streaming.
+//
+// Reliability model: this is an inbound (push) source. Unlike pull connectors
+// (websocket, sse, rest_poller) which reconnect with exponential backoff on
+// transient failures, the gRPC source does not "reconnect" — it accepts
+// whatever the upstream clients send. If the local gRPC server itself fails
+// (rare; e.g. port binding lost), the source enters StatusError and stays
+// there until the stream is removed and re-registered. Stream resumption and
+// retry on individual client streams are the upstream client's responsibility.
 type GrpcSource struct {
 	pb.UnimplementedStreamerServer
 

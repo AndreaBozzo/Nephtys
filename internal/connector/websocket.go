@@ -93,7 +93,9 @@ func (w *WebSocketSource) Start(ctx context.Context, publish PublishFunc) error 
 		w.setStatus(domain.StatusConnecting)
 		w.logger.Info("Connecting", "url", w.url)
 
-		conn, _, err := websocket.DefaultDialer.DialContext(ctx, w.url, nil)
+		// gorilla/websocket returns the upgrade response; closing it is
+		// neither required nor safe — the connection is owned by the conn.
+		conn, _, err := websocket.DefaultDialer.DialContext(ctx, w.url, nil) //nolint:bodyclose
 		if err != nil {
 			w.logger.Error("Connection failed", "error", err)
 			w.setStatus(domain.StatusError)
