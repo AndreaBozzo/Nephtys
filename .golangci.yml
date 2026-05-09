@@ -1,0 +1,39 @@
+# golangci-lint configuration for Nephtys.
+# Conservative starting set — catches real issues without flagging style noise.
+# Run locally: `make lint` (or `golangci-lint run`).
+
+run:
+  timeout: 3m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    # Defaults from golangci-lint that catch real bugs.
+    - errcheck      # unchecked errors
+    - govet         # suspicious constructs
+    - ineffassign   # unused assignments
+    - staticcheck   # broad static analysis (SA*, ST*, S1*)
+    - unused        # unused code
+    # Additional, low-noise:
+    - bodyclose     # http.Response.Body must be closed
+    - misspell      # common misspellings in comments/strings
+    - unconvert     # redundant type conversions
+    - gocritic      # opinionated but generally correct findings
+
+linters-settings:
+  gocritic:
+    disabled-checks:
+      - ifElseChain
+      - singleCaseSwitch
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Test files often have intentional patterns lint would flag.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gocritic
