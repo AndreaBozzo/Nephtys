@@ -1,0 +1,24 @@
+# Codecov configuration for Nephtys.
+# Coverage is reported by `go test -race -coverprofile=coverage.out ./...`
+# in the GitHub Actions workflow.
+
+coverage:
+  status:
+    project:
+      default:
+        target: 70%
+        threshold: 1%
+    patch:
+      default:
+        target: 70%
+        threshold: 5%
+
+# Exclude generated and non-runtime files from coverage accounting.
+# Generated protobuf has no business logic to test; benchmark _test.go
+# files are not exercised by `go test` (only by `go test -bench=.`).
+ignore:
+  - "**/*.pb.go"
+  - "**/*_grpc.pb.go"
+  - "internal/grpc/streamer/"
+  - "**/bench_test.go"
+  - "proto/"

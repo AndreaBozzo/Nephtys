@@ -238,6 +238,30 @@ func TestValidateStreamConfig(t *testing.T) {
 	}
 }
 
+// TestValidateStreamConfig_Exported sanity-checks the exported wrapper used
+// by `nephtys --config-check`. It must agree with the internal validator.
+func TestValidateStreamConfig_Exported(t *testing.T) {
+	good := domain.StreamSourceConfig{
+		ID:    "x",
+		Kind:  "websocket",
+		URL:   "wss://example.com/ws",
+		Topic: "nephtys.stream.x",
+	}
+	if err := ValidateStreamConfig(good); err != nil {
+		t.Errorf("ValidateStreamConfig(good) = %v, want nil", err)
+	}
+
+	bad := domain.StreamSourceConfig{
+		ID:    "x",
+		Kind:  "websocket",
+		URL:   "http://wrong-scheme",
+		Topic: "nephtys.stream.x",
+	}
+	if err := ValidateStreamConfig(bad); err == nil {
+		t.Error("ValidateStreamConfig(bad) = nil, want error")
+	}
+}
+
 func TestWriteJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
