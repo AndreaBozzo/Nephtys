@@ -202,6 +202,7 @@ The phases are sequenced so each unlocks the next. Don't skip ahead — backpres
 - **B3. Connector supervisor with restart policy.** Today a permanent `source.Start()` failure ([server/manager.go:271-275](../internal/server/manager.go#L271-L275)) kills the stream silently. Add per-stream `restart: { max_attempts, backoff }` config. With B1 + the existing state gauge from M3, operators get full lifecycle visibility.
 - **B4. Schema/version envelope on `StreamEvent`.** Major-version bump territory. Worth doing once two consumers exist to migrate. Resolves §7 "Schema/version envelope" deferral. Likely shape: optional `schema_version` field, additive; tag a v1 release at the same time.
 - **B5. Generalize the post-connect hook to SSE.** Month 2 (June) adds it for WebSocket. Some SSE feeds want a `Last-Event-ID` or auth header pattern that doesn't fit static-headers config — extend the same idea. Generic, additive.
+- **B6. Move generated gRPC stubs out of `internal/`.** [proto/nephtys/v1/streamer.proto](../proto/nephtys/v1/streamer.proto) currently sets `go_package = "nephtys/internal/grpc/streamer"`, which prevents external Go clients from importing the generated stubs without forking or regenerating. The right shape is a stable public path like `github.com/AndreaBozzo/Nephtys/proto/nephtys/v1` paired with the schema envelope work in B4 — this is wire/API restructuring and belongs with the v1 cut, not the paper window. Tracked as a §5 do-not-touch deferral until then.
 
 ### Phase C (Feb–Jul 2027) — Sensor depth without losing genericness
 

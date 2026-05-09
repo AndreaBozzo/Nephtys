@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -85,10 +86,15 @@ func run() error {
 // runConfigCheck reads a stream config from path (or stdin if path == "-")
 // and validates it against the same rules used by POST /v1/streams.
 func runConfigCheck(path string) error {
+	const maxConfigBytes = 1 << 20 // 1 MiB; stream configs are tiny.
+
 	var data []byte
 	var err error
 	if path == "-" {
-		data, err = readAllStdin()
+		data, err = io.ReadAll(io.LimitReader(os.Stdin, maxConfigBytes+1))
+		if err == nil && len(data) > maxConfigBytes {
+			return fmt.Errorf("stdin payload exceeds %d bytes", maxConfigBytes)
+		}
 	} else {
 		data, err = os.ReadFile(path)
 	}
@@ -106,27 +112,6 @@ func runConfigCheck(path string) error {
 
 	fmt.Printf("OK: %s (kind=%s, topic=%s)\n", cfg.ID, cfg.Kind, cfg.Topic)
 	return nil
-}
-
-func readAllStdin() ([]byte, error) {
-	const maxStdin = 1 << 20 // 1 MiB; stream configs are tiny.
-	buf := make([]byte, 0, 4096)
-	tmp := make([]byte, 4096)
-	for {
-		n, err := os.Stdin.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-			if len(buf) > maxStdin {
-				return nil, fmt.Errorf("stdin payload exceeds %d bytes", maxStdin)
-			}
-		}
-		if err != nil {
-			if errors.Is(err, os.ErrClosed) || err.Error() == "EOF" {
-				return buf, nil
-			}
-			return buf, err
-		}
-	}
 }
 
 func runService() error {

@@ -251,7 +251,7 @@ Pipelines are declared inline on stream registration as JSON. Each middleware is
 
 - **Filter** — drops events whose `type` doesn't match `match_types`.
 - **Transform** — remaps fields in the JSON payload using dot-notation paths.
-- **Dedup** — short-window LRU deduplication on FNV-1a payload hashes. Per-stream and in-memory; state is not shared across instances and does not survive restart. Bounded by `cache_size` (default 1000) with `ttl` (default `1m`); above that unique-payload rate the LRU silently evicts older hashes and the effective window shrinks. Size `cache_size` for at least one full TTL window of expected unique payloads.
+- **Dedup** — short-window LRU deduplication on FNV-1a payload hashes. Per-stream and in-memory; state is not shared across instances and does not survive restart. Bounded by `cache_size` (default 1000). `ttl` (default `1m`) is enforced lazily: an entry is fresh until the TTL has elapsed since it was last seen, and treated as expired only when its hash is checked again past that window — stale entries that are never re-seen remain in the LRU until evicted by capacity. Size `cache_size` for at least one full TTL window of expected unique payloads.
 - **Enrich** — adds static tags to outgoing events.
 - **Threshold** — emits only when a numeric path changes by at least a configured delta (useful for sensor anomaly filtering).
 - **Batch** — buffers events into bounded batches before publishing.
