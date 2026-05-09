@@ -1,6 +1,6 @@
 # Binaries
 bin/
-nephtys
+/nephtys
 *.exe
 
 # Go

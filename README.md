@@ -65,7 +65,7 @@ See [`docs/examples/`](docs/examples/) for runnable configurations covering each
 - **Durable persistence** via NATS JetStream — both event payloads and stream configurations survive restarts.
 - **Configurable pipelines** — filter, transform, deduplicate, enrich, threshold, and batch payloads on the fly via JSON config.
 - **No extra infrastructure** — runs alongside NATS; no separate database, cache, or coordination service required.
-- **Self-healing connectors** — interrupted streams reconnect automatically with exponential backoff.
+- **Self-healing pull connectors** — `websocket` and `sse` reconnect with exponential backoff; `rest_poller` retries on the next tick. (Inbound `webhook` and `grpc` sources delegate retry to the upstream client — see [Supported Connectors](#supported-connectors).)
 - **Edge-friendly footprint** — single Go binary, low memory, suitable for resource-constrained deployments.
 
 ## Architecture
@@ -225,15 +225,25 @@ Control the global behavior of the instance via environment variables.
 | `NEPHTYS_ADMIN_TOKEN` | unset | Optional bearer token for stream-management endpoints |
 | `NEPHTYS_LOG_LEVEL` | `info` | Operational logging verbosity (`debug`, `info`, `warn`, `error`) |
 
+### CLI flags
+
+```bash
+nephtys --version                                   # print version (VCS-stamped) and exit
+nephtys --config-check docs/examples/sensor.json    # validate a stream config and exit (0 = ok, 1 = invalid)
+cat config.json | nephtys --config-check -          # same, from stdin (useful in CI)
+```
+
 ## Supported Connectors
 
-| Kind | Description | Config Keys |
-|------|-------------|-------------|
-| `websocket` | Standard WebSocket with auto-reconnect and exponential backoff. | `url` |
-| `rest_poller` | Periodically requests JSON from REST APIs at given intervals. | `url`, `interval` |
-| `sse` | Standard Server-Sent Events bindings. | `url` |
-| `webhook` | Local HTTP server listener receiving inbound webhooks. | N/A (Exposed on `/v1/webhooks/{id}`) |
-| `grpc` | Direct gRPC data pushes for high-throughput microservices. | `port` |
+| Kind | Direction | Reconnect | Description | Config Keys |
+|------|-----------|-----------|-------------|-------------|
+| `websocket` | Outbound (pull) | Auto, exp. backoff | Standard WebSocket. | `url` |
+| `rest_poller` | Outbound (pull) | N/A (next tick) | Periodically requests JSON from REST APIs at given intervals. | `url`, `interval` |
+| `sse` | Outbound (pull) | Auto, exp. backoff | Standard Server-Sent Events bindings. | `url` |
+| `webhook` | Inbound (push) | Client's responsibility | Local HTTP server receiving inbound webhooks. | `port`, `path`, `auth_token` |
+| `grpc` | Inbound (push) | Client's responsibility | gRPC server accepting client-streaming pushes. | `port` |
+
+**Reconnect semantics.** Pull connectors (`websocket`, `sse`) reconnect transparently with exponential backoff (1s → 30s) on transient failures; `rest_poller` simply retries on the next tick. Push connectors (`webhook`, `grpc`) do not "reconnect" — they accept whatever the upstream client sends, so retry-on-failure is the *client's* responsibility. If the local HTTP/gRPC server itself fails (rare), the stream enters an error state and must be removed and re-registered.
 
 ## Pipeline Middlewares
 
@@ -241,7 +251,7 @@ Pipelines are declared inline on stream registration as JSON. Each middleware is
 
 - **Filter** — drops events whose `type` doesn't match `match_types`.
 - **Transform** — remaps fields in the JSON payload using dot-notation paths.
-- **Dedup** — short-window LRU deduplication to suppress repeats.
+- **Dedup** — short-window LRU deduplication on FNV-1a payload hashes. Per-stream and in-memory; state is not shared across instances and does not survive restart. Bounded by `cache_size` (default 1000). `ttl` (default `1m`) is enforced lazily: an entry is fresh until the TTL has elapsed since it was last seen, and treated as expired only when its hash is checked again past that window — stale entries that are never re-seen remain in the LRU until evicted by capacity. Size `cache_size` for at least one full TTL window of expected unique payloads.
 - **Enrich** — adds static tags to outgoing events.
 - **Threshold** — emits only when a numeric path changes by at least a configured delta (useful for sensor anomaly filtering).
 - **Batch** — buffers events into bounded batches before publishing.

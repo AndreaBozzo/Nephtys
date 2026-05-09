@@ -1,8 +1,8 @@
 # Nephtys — Roadmap (May–Jul 2026)
 
 **Author:** Andrea Bozzo
-**Last reviewed:** 2026-05-06
-**Horizon:** ~3 months
+**Last reviewed:** 2026-05-09
+**Horizon:** ~3 months (paper window) + 6–12 month post-review preview in §6
 **Status of project:** UIC short paper under peer review (~1 month remaining). Code is stable; this window is for **focused, additive evolution** that keeps the paper's claims true and, where possible, strengthens them.
 
 ---
@@ -18,7 +18,7 @@
 
 ---
 
-## 2. Current state (verified 2026-05-06, against code at HEAD `8b2ce07`)
+## 2. Current state (verified 2026-05-09)
 
 **What works well:**
 - Generic stream connector abstraction (`internal/connector/`): WebSocket, REST poller, SSE, webhook, gRPC sources — all framework-agnostic.
@@ -26,9 +26,12 @@
 - StreamEvent carries a `Seq` field; `X-Nephtys-Seq` header published when upstream provides one. Mercury falls back to NATS `metadata.sequence` otherwise.
 - Pipeline DSL (filter / transform / dedup / enrich / threshold) operates on opaque payloads.
 - Bearer-token admin auth ([config/config.go](../internal/config/config.go), [server/auth.go](../internal/server/auth.go)).
-- **Stream config persistence works**: registration & deletion roundtrip through a JetStream KV bucket ([store/](../internal/store/), wired in [cmd/nephtys/main.go:38-50](../cmd/nephtys/main.go#L38-L50)). `StreamManager.Restore()` ([server/manager.go:119-149](../internal/server/manager.go#L119-L149)) re-registers persisted streams on startup.
-- **Per-stream Prometheus metrics already wired** ([telemetry/metrics.go](../internal/telemetry/metrics.go)): `events_ingested_total{stream_id}`, `events_published_total{stream_id}`, `events_dropped_by_pipeline_total{stream_id, middleware}`, `bytes_ingested_total{stream_id}`, `bytes_published_total{stream_id}`. `/metrics` endpoint exposed via `promhttp.Handler()` ([server/server.go:70](../internal/server/server.go#L70)) and reachable without admin auth (Prometheus-scrape-friendly).
-- Full CI + Codecov + Grafana renderer.
+- **Stream config persistence works**: registration & deletion roundtrip through a JetStream KV bucket ([store/](../internal/store/), wired in [cmd/nephtys/main.go](../cmd/nephtys/main.go)). `StreamManager.Restore()` ([server/manager.go:119-149](../internal/server/manager.go#L119-L149)) re-registers persisted streams on startup.
+- **Per-stream Prometheus metrics** ([telemetry/metrics.go](../internal/telemetry/metrics.go)): `events_ingested_total{stream_id}`, `events_published_total{stream_id}`, `events_dropped_by_pipeline_total{stream_id, middleware}`, `bytes_ingested_total{stream_id}`, `bytes_published_total{stream_id}`, `event_processing_duration_seconds{stream_id}` (histogram, ingest→publish wall-clock), `dedup_cache_size{stream_id}` (gauge), `dedup_cache_evictions_total{stream_id}` (counter). `/metrics` endpoint exposed via `promhttp.Handler()` ([server/server.go:70](../internal/server/server.go#L70)) and reachable without admin auth (Prometheus-scrape-friendly).
+- **Reconnect semantics documented**: pull connectors (`websocket`, `sse`, `rest_poller`) reconnect/retry; push connectors (`webhook`, `grpc`) delegate retry to upstream client. Inline godoc on each source + README table column.
+- **Operator CLI**: `--version` (VCS-stamped via `runtime/debug`) and `--config-check <file|->` (validates a stream config against the same rules as `POST /v1/streams`, exit 0/1 for CI).
+- **Benchmark coverage**: `BenchmarkPublishJSON` / `BenchmarkPublishBinary` in `internal/broker/`, `BenchmarkPipelineEnrich` / `…EnrichTransform` / `…DedupHit` / `…FullChain` in `internal/pipeline/`. Cite-able numbers if reviewers ask.
+- **CI surface**: gofmt + `go vet` + `go test -race -cover` + `golangci-lint` (errcheck, govet, ineffassign, staticcheck, unused, bodyclose, misspell, unconvert, gocritic) + Codecov upload. Grafana renderer container in compose.
 - Production consumer: Mercury (crypto trading agent). Paper framing is **urban sensor streams**; sensor consumers are claimed but not yet demonstrated end-to-end.
 
 **Known limitations carried into this window:**
@@ -139,18 +142,21 @@ Note: Q1 and Q6 below are folded into Month 1 (§3) because they form the core o
 
 | # | Quick win | Cost | Status | Why it's a win |
 |---|---|---|---|---|
-| Q1 | Sensor-stream walkthrough in `README.md` | 30 min | Folded into M1 | Strengthens paper framing in the most-read file. |
-| Q2 | `--version` / `--config-check` flags on the `nephtys` binary | 45 min | Open | Operator QoL; useful in downstream CI. |
+| Q1 | Sensor-stream walkthrough in `README.md` | 30 min | ✅ landed M1 (2026-05-06) | Strengthens paper framing in the most-read file. |
+| Q2 | `--version` / `--config-check` flags on the `nephtys` binary | 45 min | ✅ landed 2026-05-09 | Operator QoL; useful in downstream CI. |
 | Q3 | `last_message_at` on `StreamInfo` (extends `GET /v1/streams`) | 45 min | Folded into M3 | Liveness signal any operator wants. |
 | Q4 | `health` field on `StreamInfo` (driven by connector state) | 30 min | Folded into M3 | Companion to Q3; additive. |
-| Q5 | `golangci-lint` config + CI job | 45 min | Open | Catches drift; cheaper before review than after. |
-| Q6 | `docs/examples/` with crypto WS + sensor REST poller + sensor SSE configs | 1 hr | Folded into M1 | Concrete proof-of-genericness. |
+| Q5 | `golangci-lint` config + CI job | 45 min | ✅ landed 2026-05-09 | Catches drift; cheaper before review than after. |
+| Q6 | `docs/examples/` with crypto WS + sensor REST poller + sensor SSE configs | 1 hr | ✅ landed M1 (2026-05-06) | Concrete proof-of-genericness. |
 | Q7 | `CHANGELOG.md` + first release tag | 30 min | Open | Useful discipline once a 2nd consumer adopts. |
-| Q8 | Benchmark for publish path (`BenchmarkPublishOpaque` in `broker/`) | 1 hr | Open | Lets the paper cite real numbers if reviewers ask. |
+| Q8 | Benchmarks for publish + pipeline paths | 1 hr | ✅ landed 2026-05-09 | Lets the paper cite real numbers if reviewers ask. |
+| Q9 | Reconnect-semantics docs (pull vs push) + dedup cache semantics in README and inline godoc | 30 min | ✅ landed 2026-05-09 | Closes a real ops surprise without code change. |
+| Q10 | Latency histogram `event_processing_duration_seconds{stream_id}` (additive metric, no API change) | 30 min | ✅ landed 2026-05-09 | One additive metric. Doesn't claim SLO; just exposes the signal. |
+| Q11 | Dedup `dedup_cache_size` gauge + `dedup_cache_evictions_total` counter | 45 min | ✅ landed 2026-05-09 | Surfaces silent dedup degradation when cache_size is undersized. |
 
 **Rule of thumb:** if a quick win starts to grow past ~1 hr or starts touching public types, stop and re-scope it as a themed month.
 
-**Open items (Q2, Q5, Q7, Q8) priority:** Q5 first (catches drift cheap), then Q8 (paper-defensive), then Q7 (release hygiene), then Q2 (nice-to-have).
+**Remaining open item:** Q7 (CHANGELOG + first release tag). Defer until the post-review window unless a 2nd consumer arrives sooner.
 
 ---
 
@@ -170,32 +176,75 @@ If a reviewer *requests* any of these, that's a different conversation — handl
 
 ---
 
-## 6. Post-review window (Aug 2026 onward — preview, not commitment)
+## 6. Post-review trajectory (Aug 2026 onward — preview, not commitment)
 
-Once the paper is through, the constraints lift and the priorities reorder. Likely candidates, in rough order:
+Once the camera-ready is in, the §5 "do not touch" list lifts and priorities reorder. The shape below is **generic-first with explicit sensor-deepening**: every phase has to pass "would this still make sense for a non-Mercury consumer?" Mercury's needs remain informative, never authoritative.
 
-1. **Land a 2nd consumer profile, sensor-side.** Even a small demo (open-data poller, public weather/air-quality feed, a Raspberry Pi telemetry stream) that exercises Nephtys end-to-end. Turns "generic" from a claim into a demonstrated property and unlocks honest design conversations for backpressure, schema versioning, and multi-tenancy.
-2. **Backpressure policy** — once two consumer profiles exist, the design has a real anchor.
-3. **Schema/version envelope** — major version bump territory. Worth it once there are real consumers to migrate.
-4. **Latency histograms** — driven by a consumer with an SLO (Mercury's live-flip path qualifies once it's flipped; sensor SLAs would also drive it).
-5. **Multi-instance scaling** — depends on actual load profile; premature today.
+The phases are sequenced so each unlocks the next. Don't skip ahead — backpressure without a 2nd consumer is bad design; clustering before backpressure is premature.
 
-These are not commitments. They are the shape of the conversation when the review window closes.
+**North Star (12-month framing).** Land Nephtys as the obvious choice for ingesting and normalizing 10–500 sensor streams onto a NATS-backed event spine. Not a Kafka competitor, not an IoT broker — the *connector layer* that turns heterogeneous public/private real-time sources into uniform, durable, replayable streams. The same binary that ingests Binance trades ingests OpenAQ air quality, ingests a Raspberry Pi weather station, ingests an SSE feed from a transit agency. Generic-first is the moat.
+
+### Phase A (Aug–Oct 2026) — Convert "generic" from claim to property
+
+**Objective:** the repo demonstrates two non-overlapping consumer profiles end-to-end, not just config files.
+
+- **A1. Real sensor reference deployment (~2 weeks).** Pick one open-data feed that's reliably up — OpenAQ air quality (REST poller), MTA SSE for transit, a public weather SSE, or similar. Stand up a small `docker-compose` stack: Nephtys → NATS → tiny consumer that writes to TimescaleDB or DuckDB → one Grafana dashboard. This is the artifact you point to when someone asks "ok but does it actually work for sensors?". **This is the singular high-conviction Phase A move** — backpressure, schema versioning, latency labels are all downstream of having a second consumer shape to anchor design decisions.
+- **A2. Backpressure policy (~1 week design + ~1 week impl).** Now that there are two consumer shapes, the design has an anchor. Trading cares about freshness (drop oldest); sensors often care about completeness (drop newest, or buffer to disk). Add per-stream `overflow_policy: drop_oldest | drop_newest | block` config field. Default keeps current behavior — additive, paper-safe in the post-review sense (i.e. doesn't contradict the camera-ready text). Resolves §7 "Backpressure policy" deferral.
+- **A3. `last_message_at` + `health` on `StreamInfo`** if Month 3 of the paper window didn't fully land them. Already scoped above as Q3/Q4.
+- **A4. Stream replay from JetStream (~1 week).** NATS already buffers; expose either `GET /v1/streams/{id}/replay?from=<seq>` or document the `nats sub --start-sequence` recipe with example consumer code. Sensor consumers want backfill; trading consumers want recovery after a flap. Probably zero new code, mostly docs + integration test.
+
+### Phase B (Nov 2026–Jan 2027) — Operator surface for production sensor deployments
+
+**Objective:** an operator running 50 streams across 5 sensor sources can run Nephtys without paging you.
+
+- **B1. Latency histograms with stage labels.** Q10 added a single ingest→publish histogram. Phase B extends with `stage="ingest|pipeline|publish"` so operators can localize where slowness lives. Driven by A1's real consumer with a real "is this stale?" question. Resolves §7 "Latency histograms" deferral.
+- **B2. OpenTelemetry tracing as opt-in.** Behind a build tag or off-by-default config so people who don't want it don't pay for it. Sensor operators with existing OTel collectors will care. Revisits §5 "Tracing / OpenTelemetry" — paper window deliberately avoided imposing OTel; opt-in keeps that property.
+- **B3. Connector supervisor with restart policy.** Today a permanent `source.Start()` failure ([server/manager.go:271-275](../internal/server/manager.go#L271-L275)) kills the stream silently. Add per-stream `restart: { max_attempts, backoff }` config. With B1 + the existing state gauge from M3, operators get full lifecycle visibility.
+- **B4. Schema/version envelope on `StreamEvent`.** Major-version bump territory. Worth doing once two consumers exist to migrate. Resolves §7 "Schema/version envelope" deferral. Likely shape: optional `schema_version` field, additive; tag a v1 release at the same time.
+- **B5. Generalize the post-connect hook to SSE.** Month 2 (June) adds it for WebSocket. Some SSE feeds want a `Last-Event-ID` or auth header pattern that doesn't fit static-headers config — extend the same idea. Generic, additive.
+- **B6. Move generated gRPC stubs out of `internal/`.** [proto/nephtys/v1/streamer.proto](../proto/nephtys/v1/streamer.proto) currently sets `go_package = "nephtys/internal/grpc/streamer"`, which prevents external Go clients from importing the generated stubs without forking or regenerating. The right shape is a stable public path like `github.com/AndreaBozzo/Nephtys/proto/nephtys/v1` paired with the schema envelope work in B4 — this is wire/API restructuring and belongs with the v1 cut, not the paper window. Tracked as a §5 do-not-touch deferral until then.
+
+### Phase C (Feb–Jul 2027) — Sensor depth without losing genericness
+
+**Objective:** Nephtys becomes the obvious answer for "I want to ingest a few dozen public sensor feeds without writing custom code." Generic-first stays — these are *facilities*, not *coupling*.
+
+- **C1. CSV/Parquet sink alongside NATS publish, opt-in per stream.** Many sensor consumers want both a live stream and an archive on disk for offline analysis. Add `sink: { type: parquet, path, rotate }` config that runs alongside NATS publishing. Generic by construction: opaque payloads, opaque sink. Trading users won't enable it; sensor users reach for it day one. **Scope discipline:** it's a sink, not a query engine.
+- **C2. Rate-aware adaptive REST polling.** Today `rest_poller` uses a fixed interval. Sensor APIs often have rate limits with `Retry-After` headers, or publish at irregular schedules. Adaptive: respect `Retry-After`, back off on 429, optionally honor an upstream-provided "next update at" hint. **No source-specific code** — pure protocol-level adaptation.
+- **C3. Multi-instance / horizontal scaling story.** Resolves §7 "Multi-instance / clustering" deferral. With two real consumers and real load profiles, the design has a basis. Likely shape: stateless workers + JetStream consumer groups for fan-out, or coordination via JetStream KV. The right design depends on what the load profile actually looks like — don't pre-design.
+- **C4. Pluggable connector via out-of-process gRPC plugins.** "I have a weird proprietary protocol" will eventually arrive. Out-of-process gRPC plugins keep Nephtys's binary clean and let consumers extend without forking. Defer until there's a real ask, but the existing `StreamSource` interface is already shaped right.
+- **C5. Sensor-network showcase deployment (~1 weekend).** 10+ heterogeneous public sources — air quality + weather + transit + bike-share + traffic + power-grid frequency + earthquake feed + stream gauge + … all flowing through one Nephtys instance, all visualized. The asset that gets you cited / adopted / starred. Probably a weekend project once Phase B lands.
+
+### Phase D (mid-2027+, contingent — strategic bets)
+
+These are not commitments; they're conversations to have once Phase C lands and adoption signals are real.
+
+- **D1. Edge deployment story.** ARM binaries, low-memory profile, "run on a Raspberry Pi as the gateway between local sensors and a central NATS cluster." This is where Nephtys's lightness becomes a category-defining feature.
+- **D2. Schema registry integration.** Once B4's envelope ships and 5+ consumers exist, a registry becomes the next obvious thing. Don't build one — integrate with existing (Confluent-compatible? CloudEvents?).
+- **D3. Native CloudEvents output mode.** Opt-in alternative envelope. Lets Nephtys plug into the broader CNCF event ecosystem without forcing the choice on existing consumers.
+- **D4. Managed/SaaS offering.** Only if community adoption justifies it. The OSS-first posture is what makes Nephtys credible; don't compromise it for early revenue.
+
+### Cross-cutting hygiene (any phase)
+
+- **Q7 (CHANGELOG + first release tag).** Folded into B4 — cutting v1 with the schema envelope is the natural moment to tag.
+- **Auth schemes beyond bearer token** ([§7](#7-deferred-items-with-rationale)). Stay deferred until specifically asked. YAGNI.
+- **Per-source helpers (Binance subscribe, MQTT connect, etc.).** **Permanent §7 deferral.** Generic-ness is non-negotiable — these live in *consumers*, not in Nephtys.
 
 ---
 
 ## 7. Deferred items (with rationale)
 
-| Item | Deferred until | Rationale |
-|---|---|---|
-| Pipeline config versioning/history | Post-review | Adds API surface; current "last write wins" is sufficient for one operator. |
-| Per-source subscribe helpers (any source) | Never (in Nephtys) | Lives in consumer, not connector. Generic-ness is non-negotiable. |
-| OTel tracing | Post-review | Paper deliberately avoids imposing OTel. |
-| Latency histograms | When a consumer has an SLO | Premature without a consumer driving the requirement. |
-| Backpressure policy | 2nd consumer profile exists | Single profile can't drive a sound design. |
-| Schema/version envelope | Post-review + 2nd consumer | Major version event; needs migration story. |
-| Multi-instance / clustering | Post-review | Paper does not claim it; scope-expanding during review. |
-| Auth schemes beyond bearer token | When asked | YAGNI; current token auth covers Mercury and any local-dev consumer. |
+| Item | Deferred until | Rationale | Phase that picks it up |
+|---|---|---|---|
+| Pipeline config versioning/history | Post-review | Adds API surface; current "last write wins" is sufficient for one operator. | Phase B (alongside B4 schema envelope) if demand emerges. |
+| Per-source subscribe helpers (any source) | **Never (in Nephtys)** | Lives in consumer, not connector. Generic-ness is non-negotiable. | — |
+| OTel tracing | Post-review | Paper deliberately avoids imposing OTel. | Phase B (B2, opt-in). |
+| Latency histograms (stage-labeled) | When a consumer has an SLO | Premature without a consumer driving the requirement. (Q10 added the single ingest→publish histogram during the paper window — stage labels are the next step.) | Phase B (B1). |
+| Backpressure policy | 2nd consumer profile exists | Single profile can't drive a sound design. | Phase A (A2), unblocked by A1. |
+| Schema/version envelope | Post-review + 2nd consumer | Major version event; needs migration story. | Phase B (B4). |
+| Multi-instance / clustering | Post-review + real load profile | Paper does not claim it; scope-expanding during review. | Phase C (C3). |
+| Auth schemes beyond bearer token | When asked | YAGNI; current token auth covers Mercury and any local-dev consumer. | Phase D (contingent). |
+| Connector supervisor / auto-restart on permanent failure | Post-review | Adds policy surface; sensible defaults need real ops experience to anchor. | Phase B (B3). |
+| CSV/Parquet sink, adaptive polling, gRPC plugin connectors | Post-review + sensor adoption | Sensor-deepening facilities; need Phase A's reference deployment to drive shape. | Phase C (C1, C2, C4). |
 
 ---
 

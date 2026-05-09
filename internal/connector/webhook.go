@@ -16,6 +16,14 @@ import (
 )
 
 // WebhookSource runs an HTTP server to ingest events via Webhooks.
+//
+// Reliability model: this is an inbound (push) source. Unlike pull connectors
+// (websocket, sse, rest_poller) which reconnect with exponential backoff on
+// transient failures, the webhook source does not "reconnect" — it accepts
+// whatever the upstream client sends. If the local HTTP server itself fails
+// (rare; e.g. port binding lost), the source enters StatusError and stays
+// there until the stream is removed and re-registered. Resending dropped
+// events is the upstream client's responsibility.
 type WebhookSource struct {
 	id     string
 	topic  string

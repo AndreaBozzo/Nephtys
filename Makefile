@@ -7,7 +7,7 @@ export
 BINARY := nephtys
 CMD := ./cmd/nephtys
 
-.PHONY: help build run test coverage fmt vet clean docker-up docker-down all
+.PHONY: help build run test coverage fmt vet lint clean docker-up docker-down all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -34,6 +34,9 @@ fmt: ## Format code
 
 vet: ## Run go vet
 	go vet ./...
+
+lint: ## Run golangci-lint (requires golangci-lint installed locally)
+	golangci-lint run
 
 clean: ## Remove build artifacts
 	rm -f $(BINARY)

@@ -14,21 +14,27 @@ import (
 // startTestServer starts an embedded NATS server with JetStream enabled.
 func startTestServer(t *testing.T) *natsserver.Server {
 	t.Helper()
+	return startTestBenchServer(t)
+}
+
+// startTestBenchServer is the testing.TB variant used by both tests and benchmarks.
+func startTestBenchServer(tb testing.TB) *natsserver.Server {
+	tb.Helper()
 	opts := &natsserver.Options{
 		Host:      "127.0.0.1",
 		Port:      -1, // random port
 		JetStream: true,
-		StoreDir:  t.TempDir(),
+		StoreDir:  tb.TempDir(),
 	}
 	srv, err := natsserver.NewServer(opts)
 	if err != nil {
-		t.Fatalf("failed to create test server: %v", err)
+		tb.Fatalf("failed to create test server: %v", err)
 	}
 	srv.Start()
 	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("nats server not ready")
+		tb.Fatal("nats server not ready")
 	}
-	t.Cleanup(srv.Shutdown)
+	tb.Cleanup(srv.Shutdown)
 	return srv
 }
 

@@ -11,6 +11,23 @@ import (
 )
 
 // NewDedup creates a deduplication middleware based on payload hashing.
+//
+// Semantics: per-stream, in-memory, FNV-1a payload hash, LRU-bounded by
+// cfg.CacheSize (default 1000). State does not survive process restart and
+// is not shared across instances — dedup is a "best-effort within this
+// process" facility, not a distributed exactly-once guarantee.
+//
+// TTL is enforced *lazily*: an entry is considered fresh until cfg.TTL has
+// elapsed since it was last seen, and is treated as expired (and thus a
+// non-duplicate) only when the same hash is checked again past that
+// window. Stale entries that are never re-seen remain in the LRU and
+// continue to count against cfg.CacheSize until evicted by capacity. As
+// a practical consequence, a stream's unique-payload rate sets a floor on
+// effective dedup window length: if unique payloads arrive faster than
+// cfg.CacheSize entries per cfg.TTL, the LRU evicts older hashes early
+// and the effective window shrinks below the configured TTL. Operators
+// with high-cardinality streams should size cfg.CacheSize for at least
+// one full TTL window of expected unique payloads.
 func NewDedup(streamID string, cfg *domain.DedupConfig) Middleware {
 	if cfg == nil || !cfg.Enabled {
 		return nil
@@ -69,12 +86,14 @@ func NewDedup(streamID string, cfg *domain.DedupConfig) Middleware {
 				if oldest != nil {
 					ll.Remove(oldest)
 					delete(cache, oldest.Value.(*entry).hash)
+					telemetry.DedupCacheEvictions.WithLabelValues(streamID).Inc()
 				}
 			}
 
 			// Mark as seen
 			elem := ll.PushFront(&entry{hash: hash, ts: now})
 			cache[hash] = elem
+			telemetry.DedupCacheSize.WithLabelValues(streamID).Set(float64(len(cache)))
 			return next(topic, event)
 		}
 	}

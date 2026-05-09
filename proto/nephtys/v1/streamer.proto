@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package nephtys.v1;
+
+option go_package = "nephtys/internal/grpc/streamer";
+
+// Streamer service allows external clients to push events into Nephtys in real-time.
+service Streamer {
+    // StreamEvents is a client-streaming RPC. 
+    // The client opens a stream and continuously sends IngestRequests.
+    // The server processes these events with ultra-low latency.
+    rpc StreamEvents(stream IngestRequest) returns (IngestResponse) {}
+}
+
+// IngestRequest represents a single event sent by the client.
+message IngestRequest {
+    // The type of the event (maps to domain.StreamEvent.Type)
+    string type = 1;
+    // The raw JSON payload as bytes (maps to domain.StreamEvent.Payload)
+    bytes payload = 2;
+}
+
+// IngestResponse is sent back when the stream is closed by the client,
+// or if an error occurs and the server terminates the stream.
+message IngestResponse {
+    // Number of events successfully processed.
+    int64 processed_count = 1;
+}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"nephtys/internal/broker"
 	"nephtys/internal/connector"
@@ -261,11 +262,14 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	m.pipelineRefs[id] = &atomicRef
 
 	instrumentedPublish := func(topic string, event domain.StreamEvent) error {
+		start := time.Now()
 		telemetry.EventsIngested.WithLabelValues(id).Inc()
 		telemetry.BytesIngested.WithLabelValues(id).Add(float64(len(event.Payload)))
 
 		h := *atomicRef.Load()
-		return h(topic, event)
+		err := h(topic, event)
+		telemetry.EventProcessingDuration.WithLabelValues(id).Observe(time.Since(start).Seconds())
+		return err
 	}
 
 	go func() {
