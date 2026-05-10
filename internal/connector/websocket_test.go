@@ -46,6 +46,34 @@ func startWSServer(t *testing.T, messages []string) *httptest.Server {
 	return srv
 }
 
+func startWSFrameServer(t *testing.T, frames []struct {
+	messageType int
+	payload     []byte
+}) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		for _, frame := range frames {
+			if err := conn.WriteMessage(frame.messageType, frame.payload); err != nil {
+				return
+			}
+		}
+
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func wsURL(httpURL string) string {
 	return "ws" + strings.TrimPrefix(httpURL, "http")
 }
@@ -138,6 +166,91 @@ func TestWebSocket_InferBinanceMetadata(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for message")
+	}
+
+	cancel()
+	source.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for source to stop")
+	}
+}
+
+func TestWebSocket_BinaryMessage(t *testing.T) {
+	srv := startWSFrameServer(t, []struct {
+		messageType int
+		payload     []byte
+	}{
+		{messageType: websocket.BinaryMessage, payload: []byte{0xff, 0x00, 0x01}},
+	})
+
+	source := NewWebSocketSource("ws-bin", wsURL(srv.URL), "test.topic")
+	received := make(chan domain.StreamEvent, 1)
+	publish := PublishFunc(func(topic string, event domain.StreamEvent) error {
+		received <- event
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- source.Start(ctx, publish)
+	}()
+
+	select {
+	case evt := <-received:
+		if evt.ContentType != domain.ContentTypeBinary {
+			t.Fatalf("expected binary content type, got %q", evt.ContentType)
+		}
+		if string(evt.Data) != string([]byte{0xff, 0x00, 0x01}) {
+			t.Fatalf("unexpected binary payload: %v", evt.Data)
+		}
+		if len(evt.Payload) != 0 {
+			t.Fatalf("expected no JSON payload for binary frame, got %q", evt.Payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for binary message")
+	}
+
+	cancel()
+	source.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for source to stop")
+	}
+}
+
+func TestWebSocket_NonJSONTextIsWrapped(t *testing.T) {
+	srv := startWSServer(t, []string{"plain text"})
+
+	source := NewWebSocketSource("ws-text", wsURL(srv.URL), "test.topic")
+	received := make(chan domain.StreamEvent, 1)
+	publish := PublishFunc(func(topic string, event domain.StreamEvent) error {
+		received <- event
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- source.Start(ctx, publish)
+	}()
+
+	select {
+	case evt := <-received:
+		var payload string
+		if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+			t.Fatalf("expected wrapped JSON string payload: %v", err)
+		}
+		if payload != "plain text" {
+			t.Fatalf("unexpected wrapped payload %q", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for text message")
 	}
 
 	cancel()

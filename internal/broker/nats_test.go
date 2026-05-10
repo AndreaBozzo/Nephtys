@@ -82,6 +82,31 @@ func TestEnsureStream(t *testing.T) {
 	}
 }
 
+func TestEnsureStream_UpdatesExistingStream(t *testing.T) {
+	srv := startTestServer(t)
+
+	brk, err := Connect(srv.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer brk.Close()
+
+	if err := brk.EnsureStream("TEST", []string{"test.old.>"}); err != nil {
+		t.Fatalf("ensure stream initial: %v", err)
+	}
+	if err := brk.EnsureStream("TEST", []string{"test.new.>"}); err != nil {
+		t.Fatalf("ensure stream update: %v", err)
+	}
+
+	info, err := brk.js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+	if len(info.Config.Subjects) != 1 || info.Config.Subjects[0] != "test.new.>" {
+		t.Fatalf("expected updated subjects, got %v", info.Config.Subjects)
+	}
+}
+
 func TestPublish_RoundTrip(t *testing.T) {
 	srv := startTestServer(t)
 

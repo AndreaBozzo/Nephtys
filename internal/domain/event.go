@@ -9,6 +9,9 @@ const (
 
 	// ContentTypeArrowStream identifies Apache Arrow IPC stream payloads.
 	ContentTypeArrowStream = "application/vnd.apache.arrow.stream"
+
+	// ContentTypeBinary identifies opaque binary payloads.
+	ContentTypeBinary = "application/octet-stream"
 )
 
 // StreamEvent is the standard envelope Nephtys publishes to the broker.
@@ -91,6 +94,7 @@ type ThresholdConfig struct {
 	Enabled bool    `json:"enabled"`
 	Path    string  `json:"path"`            // JSON path to the numerical value
 	Delta   float64 `json:"delta,omitempty"` // Minimum absolute change required to pass the filter
+	GroupBy string  `json:"group_by,omitempty"`
 }
 
 // BatchConfig configures the event batching middleware.

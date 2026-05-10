@@ -217,6 +217,43 @@ func TestTransformMiddleware(t *testing.T) {
 	}
 }
 
+func TestTransformMiddleware_ArrayPath(t *testing.T) {
+	cfg := &domain.TransformConfig{
+		Mapping: map[string]string{
+			"pm25": "0.sensordatavalues.1.value",
+			"lat":  "0.location.latitude",
+		},
+	}
+	transform := NewTransform(cfg)
+
+	evt := domain.StreamEvent{
+		Payload: json.RawMessage(`[
+			{
+				"location": {"latitude": "38.42"},
+				"sensordatavalues": [
+					{"value_type": "P1", "value": "18.2"},
+					{"value_type": "P2", "value": "9.4"}
+				]
+			}
+		]`),
+	}
+
+	var res domain.StreamEvent
+	handler := transform(func(topic string, e domain.StreamEvent) error {
+		res = e
+		return nil
+	})
+	_ = handler("topic", evt)
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(res.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+	if payload["pm25"] != "9.4" || payload["lat"] != "38.42" {
+		t.Fatalf("payload not transformed from array path: %v", payload)
+	}
+}
+
 func TestBuilderFullConfig(t *testing.T) {
 	cfg := &domain.PipelineConfig{
 		Filter: &domain.FilterConfig{MatchTypes: []string{"allowed"}},

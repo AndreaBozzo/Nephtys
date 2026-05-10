@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
@@ -19,8 +20,13 @@ func NewThreshold(streamID string, cfg *domain.ThresholdConfig) Middleware {
 	}
 
 	var mu sync.Mutex
-	var hasLast bool
-	var lastVal float64
+	type state struct {
+		hasLast bool
+		lastVal float64
+	}
+	states := map[string]state{
+		"": {},
+	}
 
 	return func(next Handler) Handler {
 		return func(topic string, event domain.StreamEvent) error {
@@ -28,7 +34,7 @@ func NewThreshold(streamID string, cfg *domain.ThresholdConfig) Middleware {
 				return next(topic, event)
 			}
 
-			var original map[string]interface{}
+			var original interface{}
 			if err := json.Unmarshal(event.Payload, &original); err != nil {
 				slog.Debug("Threshold: payload is not a JSON object, passing through", "source", event.Source)
 				return next(topic, event)
@@ -58,11 +64,21 @@ func NewThreshold(streamID string, cfg *domain.ThresholdConfig) Middleware {
 				return next(topic, event)
 			}
 
+			groupKey := ""
+			if cfg.GroupBy != "" {
+				groupValue, ok := extractValue(original, cfg.GroupBy)
+				if !ok {
+					return next(topic, event)
+				}
+				groupKey = fmt.Sprint(groupValue)
+			}
+
 			mu.Lock()
-			if !hasLast || math.Abs(currentVal-lastVal) >= cfg.Delta {
-				// Record new value and pass
-				lastVal = currentVal
-				hasLast = true
+			groupState := states[groupKey]
+			if !groupState.hasLast || math.Abs(currentVal-groupState.lastVal) >= cfg.Delta {
+				groupState.lastVal = currentVal
+				groupState.hasLast = true
+				states[groupKey] = groupState
 				mu.Unlock()
 				return next(topic, event)
 			}

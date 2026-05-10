@@ -3,6 +3,7 @@ package broker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -73,10 +74,15 @@ func (b *Broker) EnsureStream(name string, subjects []string) error {
 		MaxBytes:  b.config.StreamMaxBytes,
 	}
 
-	// AddStream is idempotent — creates if missing, updates if exists
-	_, err := b.js.AddStream(streamCfg)
-	if err != nil {
-		return fmt.Errorf("ensure stream %q: %w", name, err)
+	if _, err := b.js.StreamInfo(name); err != nil {
+		if !errors.Is(err, nats.ErrStreamNotFound) {
+			return fmt.Errorf("inspect stream %q: %w", name, err)
+		}
+		if _, err := b.js.AddStream(streamCfg); err != nil {
+			return fmt.Errorf("create stream %q: %w", name, err)
+		}
+	} else if _, err := b.js.UpdateStream(streamCfg); err != nil {
+		return fmt.Errorf("update stream %q: %w", name, err)
 	}
 
 	b.logger.Info("JetStream stream ready", "name", name, "subjects", subjects)

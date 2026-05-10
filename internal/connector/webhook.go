@@ -88,8 +88,12 @@ func (w *WebhookSource) Start(ctx context.Context, publish PublishFunc) error {
 	mux.HandleFunc(w.config.Path, w.handleWebhook(publish))
 
 	w.server = &http.Server{
-		Addr:    ":" + w.config.Port,
-		Handler: mux,
+		Addr:              ":" + w.config.Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	w.setStatus(domain.StatusRunning)

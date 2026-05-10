@@ -21,7 +21,7 @@ func NewTransform(cfg *domain.TransformConfig) Middleware {
 				return next(topic, event)
 			}
 
-			var original map[string]interface{}
+			var original interface{}
 			if err := json.Unmarshal(event.Payload, &original); err != nil {
 				slog.Debug("Transform: payload is not a JSON object, skipping", "source", event.Source)
 				return next(topic, event)

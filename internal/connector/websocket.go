@@ -142,23 +142,44 @@ func (w *WebSocketSource) readLoop(ctx context.Context, conn *websocket.Conn, pu
 		default:
 		}
 
-		_, message, err := conn.ReadMessage()
+		messageType, message, err := conn.ReadMessage()
 		if err != nil {
 			return err
 		}
 
-		eventType, timestamp, seq := inferWebSocketMetadata(message, time.Now().UnixMilli())
-		event := domain.StreamEvent{
-			Source:    w.id,
-			Type:      eventType,
-			Timestamp: timestamp,
-			Seq:       seq,
-			Payload:   json.RawMessage(message),
-		}
+		event := w.eventFromMessage(messageType, message)
 
 		if err := publish(w.topic, event); err != nil {
 			w.logger.Error("Publish failed", "error", err)
 		}
+	}
+}
+
+func (w *WebSocketSource) eventFromMessage(messageType int, message []byte) domain.StreamEvent {
+	now := time.Now().UnixMilli()
+	if messageType == websocket.BinaryMessage {
+		return domain.StreamEvent{
+			Source:      w.id,
+			Type:        "websocket_binary",
+			Timestamp:   now,
+			ContentType: domain.ContentTypeBinary,
+			Data:        message,
+		}
+	}
+
+	eventType, timestamp, seq := inferWebSocketMetadata(message, now)
+	payload := json.RawMessage(message)
+	if !json.Valid(message) {
+		wrapped, _ := json.Marshal(string(message))
+		payload = json.RawMessage(wrapped)
+	}
+
+	return domain.StreamEvent{
+		Source:    w.id,
+		Type:      eventType,
+		Timestamp: timestamp,
+		Seq:       seq,
+		Payload:   payload,
 	}
 }
 

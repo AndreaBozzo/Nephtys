@@ -41,3 +41,36 @@ func TestThresholdMiddleware(t *testing.T) {
 		}
 	}
 }
+
+func TestThresholdMiddleware_GroupBy(t *testing.T) {
+	cfg := &domain.ThresholdConfig{
+		Enabled: true,
+		Path:    "pm25",
+		Delta:   1.0,
+		GroupBy: "station",
+	}
+	threshold := NewThreshold("test", cfg)
+
+	events := []domain.StreamEvent{
+		{Payload: json.RawMessage(`{"station":"AQ-001","pm25":10.0}`)},
+		{Payload: json.RawMessage(`{"station":"AQ-002","pm25":20.0}`)},
+		{Payload: json.RawMessage(`{"station":"AQ-001","pm25":10.4}`)},
+		{Payload: json.RawMessage(`{"station":"AQ-002","pm25":21.2}`)},
+	}
+	expectedPasses := []bool{true, true, false, true}
+
+	passedCount := 0
+	handler := threshold(func(topic string, e domain.StreamEvent) error {
+		passedCount++
+		return nil
+	})
+
+	for i, e := range events {
+		before := passedCount
+		_ = handler("topic", e)
+		passed := passedCount > before
+		if passed != expectedPasses[i] {
+			t.Errorf("event %d: passed=%v, want=%v", i, passed, expectedPasses[i])
+		}
+	}
+}

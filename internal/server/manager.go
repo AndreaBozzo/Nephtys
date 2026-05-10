@@ -172,7 +172,7 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 	pipe := pipeline.BuildFromConfig(pipeCtx, id, pipelineCfg)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
 		telemetry.EventsPublished.WithLabelValues(id).Inc()
-		telemetry.BytesPublished.WithLabelValues(id).Add(float64(len(event.Payload)))
+		telemetry.BytesPublished.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
 		return m.broker.Publish(topic, event)
 	})
 
@@ -253,7 +253,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	pipe := pipeline.BuildFromConfig(pipeCtx, id, cfg.Pipeline)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
 		telemetry.EventsPublished.WithLabelValues(id).Inc()
-		telemetry.BytesPublished.WithLabelValues(id).Add(float64(len(event.Payload)))
+		telemetry.BytesPublished.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
 		return m.broker.Publish(topic, event)
 	})
 
@@ -264,7 +264,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	instrumentedPublish := func(topic string, event domain.StreamEvent) error {
 		start := time.Now()
 		telemetry.EventsIngested.WithLabelValues(id).Inc()
-		telemetry.BytesIngested.WithLabelValues(id).Add(float64(len(event.Payload)))
+		telemetry.BytesIngested.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
 
 		h := *atomicRef.Load()
 		err := h(topic, event)
@@ -280,6 +280,13 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	}()
 
 	m.logger.Info("Source registered and started", "id", id)
+}
+
+func eventPayloadSize(event domain.StreamEvent) int {
+	if len(event.Data) > 0 {
+		return len(event.Data)
+	}
+	return len(event.Payload)
 }
 
 // sourceFromConfig creates a StreamSource from a persisted config.

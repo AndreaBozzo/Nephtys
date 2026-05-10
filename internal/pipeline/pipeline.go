@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"strconv"
 	"strings"
 
 	"nephtys/internal/domain"
@@ -33,19 +34,28 @@ func (p *Pipeline) Execute(publish Handler) Handler {
 	return handler
 }
 
-// extractValue traverses a nested map using dot notation (e.g., "data.kline.c")
-func extractValue(obj map[string]interface{}, path string) (interface{}, bool) {
+// extractValue traverses maps and arrays using dot notation (e.g.,
+// "data.kline.c" or "0.sensordatavalues.1.value").
+func extractValue(obj interface{}, path string) (interface{}, bool) {
 	parts := strings.Split(path, ".")
 	var current interface{} = obj
 
 	for _, part := range parts {
-		if currentMap, ok := current.(map[string]interface{}); ok {
+		switch currentValue := current.(type) {
+		case map[string]interface{}:
+			currentMap := currentValue
 			if val, exists := currentMap[part]; exists {
 				current = val
 			} else {
 				return nil, false
 			}
-		} else {
+		case []interface{}:
+			idx, err := strconv.Atoi(part)
+			if err != nil || idx < 0 || idx >= len(currentValue) {
+				return nil, false
+			}
+			current = currentValue[idx]
+		default:
 			return nil, false
 		}
 	}
