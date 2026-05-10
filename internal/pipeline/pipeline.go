@@ -38,7 +38,7 @@ func (p *Pipeline) Execute(publish Handler) Handler {
 // "data.kline.c" or "0.sensordatavalues.1.value").
 func extractValue(obj interface{}, path string) (interface{}, bool) {
 	parts := strings.Split(path, ".")
-	var current interface{} = obj
+	current := obj
 
 	for _, part := range parts {
 		switch currentValue := current.(type) {
