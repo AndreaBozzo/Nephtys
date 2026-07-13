@@ -289,7 +289,7 @@ Contributions and issues are welcome. See [CONTRIBUTING.md](docs/CONTRIBUTING.md
 
 ## Citation
 
-If you use Nephtys in your research, please cite the following paper (under review):
+If you use Nephtys in your research, please cite the following accepted short paper:
 
 > **Andrea Bozzo. "Nephtys: Lightweight Edge Connector for Bandwidth-Efficient Ingestion of Urban Sensor Streams". IEEE UIC 2026.**
 
@@ -303,7 +303,7 @@ Companion repository and evaluation material: [AndreaBozzo/uic2026-nephtys](http
   title     = {Nephtys: Lightweight Edge Connector for Bandwidth-Efficient Ingestion of Urban Sensor Streams},
   booktitle = {IEEE International Conference on Ubiquitous Intelligence and Computing (UIC)},
   year      = {2026},
-  note      = {Short Paper, Under Review}
+  note      = {Accepted Short Paper}
 }
 ```
 
