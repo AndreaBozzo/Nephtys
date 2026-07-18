@@ -9,8 +9,9 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ## [Unreleased]
 
 ### Added
+- Per-stream operational visibility: one-hot `nephtys_stream_state{stream_id,state}` metric plus additive `health` and `last_message_at` fields from `GET /v1/streams`. (#11)
 - Optional `websocket.on_connect_send` field (string or list of strings) on WebSocket stream configs: frames are sent verbatim after every successful handshake, including reconnects. Unlocks sources that require a subscribe/auth frame. Trading-style and sensor-style examples in `docs/examples/`. (#10)
-- Post-acceptance roadmap (Aug 2026 – Jan 2027) with three-pillar direction: ops core, visibility, agent-native frontier.
+- Outcome-based roadmap covering the operational core, public proof, stable platform, and focused experiments without calendar commitments.
 - README comparison section citing the controlled Node-RED benchmark from the UIC 2026 camera-ready evaluation.
 - Agent-telemetry example stream config in `docs/examples/`.
 

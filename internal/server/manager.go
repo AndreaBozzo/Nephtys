@@ -26,6 +26,8 @@ type StreamManager struct {
 	pipelineCancels map[string]context.CancelFunc // cancels batch goroutines on pipeline swap
 	cancels         map[string]context.CancelFunc
 	dones           map[string]chan struct{}
+	stateDones      map[string]chan struct{}
+	runtimes        map[string]*streamRuntime
 	broker          *broker.Broker
 	store           *store.StreamStore // nil in tests
 	logger          *slog.Logger
@@ -40,6 +42,8 @@ func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager 
 		pipelineCancels: make(map[string]context.CancelFunc),
 		cancels:         make(map[string]context.CancelFunc),
 		dones:           make(map[string]chan struct{}),
+		stateDones:      make(map[string]chan struct{}),
+		runtimes:        make(map[string]*streamRuntime),
 		broker:          brk,
 		store:           st,
 		logger:          slog.With("component", "manager"),
@@ -48,8 +52,14 @@ func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager 
 
 // StreamInfo is the API representation of a running stream.
 type StreamInfo struct {
-	ID     string              `json:"id"`
-	Status domain.SourceStatus `json:"status"`
+	ID            string              `json:"id"`
+	Status        domain.SourceStatus `json:"status"`
+	Health        string              `json:"health"`
+	LastMessageAt *time.Time          `json:"last_message_at,omitempty"`
+}
+
+type streamRuntime struct {
+	lastMessageUnixNano atomic.Int64
 }
 
 // Register adds a source and starts it in a background goroutine.
@@ -97,12 +107,18 @@ func (m *StreamManager) Remove(id string) error {
 	if done, ok := m.dones[id]; ok {
 		<-done
 	}
+	if stateDone, ok := m.stateDones[id]; ok {
+		<-stateDone
+	}
 
 	delete(m.sources, id)
 	delete(m.pipelineRefs, id)
 	delete(m.pipelineCancels, id)
 	delete(m.cancels, id)
 	delete(m.dones, id)
+	delete(m.stateDones, id)
+	delete(m.runtimes, id)
+	telemetry.DeleteStreamState(id)
 
 	// Remove persisted config
 	if m.store != nil {
@@ -191,9 +207,13 @@ func (m *StreamManager) List() []StreamInfo {
 
 	infos := make([]StreamInfo, 0, len(m.sources))
 	for _, src := range m.sources {
+		runtime := m.runtimes[src.ID()]
+		status := src.Status()
 		infos = append(infos, StreamInfo{
-			ID:     src.ID(),
-			Status: src.Status(),
+			ID:            src.ID(),
+			Status:        status,
+			Health:        sourceHealth(status),
+			LastMessageAt: runtimeLastMessageAt(runtime),
 		})
 	}
 	return infos
@@ -223,23 +243,36 @@ func (m *StreamManager) StopAll() {
 				<-d
 			}(done)
 		}
+		if stateDone, ok := m.stateDones[id]; ok {
+			wg.Add(1)
+			go func(d chan struct{}) {
+				defer wg.Done()
+				<-d
+			}(stateDone)
+		}
 		m.logger.Info("Source stopped", "id", id)
 	}
 
 	// Wait for all sources to cleanly exit
 	wg.Wait()
+	for id := range m.sources {
+		telemetry.DeleteStreamState(id)
+	}
 
 	m.sources = make(map[string]connector.StreamSource)
 	m.pipelineRefs = make(map[string]*atomic.Pointer[pipeline.Handler])
 	m.pipelineCancels = make(map[string]context.CancelFunc)
 	m.cancels = make(map[string]context.CancelFunc)
 	m.dones = make(map[string]chan struct{})
+	m.stateDones = make(map[string]chan struct{})
+	m.runtimes = make(map[string]*streamRuntime)
 }
 
 // startSourceLocked launches a source in a goroutine. Must be called with mu held.
 func (m *StreamManager) startSourceLocked(id string, source connector.StreamSource, cfg domain.StreamSourceConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	stateDone := make(chan struct{})
 
 	// Pipeline gets its own context so batch goroutines can be cancelled independently
 	pipeCtx, pipeCancel := context.WithCancel(context.Background())
@@ -248,6 +281,9 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	m.cancels[id] = cancel
 	m.pipelineCancels[id] = pipeCancel
 	m.dones[id] = done
+	m.stateDones[id] = stateDone
+	runtime := &streamRuntime{}
+	m.runtimes[id] = runtime
 
 	// Build initial handler
 	pipe := pipeline.BuildFromConfig(pipeCtx, id, cfg.Pipeline)
@@ -263,6 +299,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 
 	instrumentedPublish := func(topic string, event domain.StreamEvent) error {
 		start := time.Now()
+		runtime.lastMessageUnixNano.Store(start.UTC().UnixNano())
 		telemetry.EventsIngested.WithLabelValues(id).Inc()
 		telemetry.BytesIngested.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
 
@@ -279,7 +316,70 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 		}
 	}()
 
+	go func() {
+		defer close(stateDone)
+		trackSourceState(ctx, id, source)
+	}()
+
 	m.logger.Info("Source registered and started", "id", id)
+}
+
+func trackSourceState(ctx context.Context, id string, source connector.StreamSource) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	trackSourceStateOnTicks(ctx, id, source, ticker.C)
+}
+
+func trackSourceStateOnTicks(ctx context.Context, id string, source connector.StreamSource, ticks <-chan time.Time) {
+	update := func() {
+		telemetry.SetStreamState(id, metricState(source.Status()))
+	}
+	update()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			update()
+		}
+	}
+}
+
+func sourceHealth(status domain.SourceStatus) string {
+	switch status {
+	case domain.StatusRunning:
+		return "healthy"
+	case domain.StatusError:
+		return "errored"
+	default:
+		return "degraded"
+	}
+}
+
+func metricState(status domain.SourceStatus) string {
+	switch status {
+	case domain.StatusRunning:
+		return "connected"
+	case domain.StatusError:
+		return "errored"
+	case domain.StatusStopped:
+		return "stopped"
+	default:
+		return "reconnecting"
+	}
+}
+
+func runtimeLastMessageAt(runtime *streamRuntime) *time.Time {
+	if runtime == nil {
+		return nil
+	}
+	nanos := runtime.lastMessageUnixNano.Load()
+	if nanos == 0 {
+		return nil
+	}
+	lastMessageAt := time.Unix(0, nanos).UTC()
+	return &lastMessageAt
 }
 
 func eventPayloadSize(event domain.StreamEvent) int {

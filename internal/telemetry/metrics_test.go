@@ -68,3 +68,21 @@ func TestEventsDroppedCounter(t *testing.T) {
 		t.Errorf("expected 1, got %f", val)
 	}
 }
+
+func TestStreamStateGaugeIsOneHot(t *testing.T) {
+	streamID := "metrics-test-state"
+	t.Cleanup(func() { DeleteStreamState(streamID) })
+
+	SetStreamState(streamID, "reconnecting")
+	if got := testutil.ToFloat64(StreamState.WithLabelValues(streamID, "reconnecting")); got != 1 {
+		t.Fatalf("reconnecting gauge = %v, want 1", got)
+	}
+
+	SetStreamState(streamID, "connected")
+	if got := testutil.ToFloat64(StreamState.WithLabelValues(streamID, "connected")); got != 1 {
+		t.Errorf("connected gauge = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(StreamState.WithLabelValues(streamID, "reconnecting")); got != 0 {
+		t.Errorf("stale reconnecting gauge = %v, want 0", got)
+	}
+}
