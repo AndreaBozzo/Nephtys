@@ -9,6 +9,9 @@ import (
 
 	"nephtys/internal/connector"
 	"nephtys/internal/domain"
+	"nephtys/internal/telemetry"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // mockSource implements connector.StreamSource for testing the manager
@@ -153,16 +156,18 @@ func TestStreamManager_RecordsLastMessageAtBeforePipelineDrop(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	publish := <-src.ready
+	beforePublish := time.Now().UTC()
 	if err := publish(cfg.Topic, domain.StreamEvent{Type: "dropped"}); err != nil {
 		t.Fatalf("publish dropped event: %v", err)
 	}
+	afterPublish := time.Now().UTC()
 
 	streams := manager.List()
 	if len(streams) != 1 || streams[0].LastMessageAt == nil {
 		t.Fatalf("expected last_message_at after ingress, got %+v", streams)
 	}
-	if time.Since(*streams[0].LastMessageAt) > time.Second {
-		t.Errorf("last_message_at is unexpectedly old: %v", streams[0].LastMessageAt)
+	if streams[0].LastMessageAt.Before(beforePublish) || streams[0].LastMessageAt.After(afterPublish) {
+		t.Errorf("last_message_at = %v, want within [%v, %v]", streams[0].LastMessageAt, beforePublish, afterPublish)
 	}
 
 	if err := manager.Remove(src.id); err != nil {
@@ -172,6 +177,31 @@ func TestStreamManager_RecordsLastMessageAtBeforePipelineDrop(t *testing.T) {
 	case <-src.stopped:
 	default:
 		t.Fatal("source did not stop")
+	}
+}
+
+func TestTrackSourceStateUpdatesOnTick(t *testing.T) {
+	streamID := "state-tracker-tick"
+	t.Cleanup(func() { telemetry.DeleteStreamState(streamID) })
+
+	src := &mockSource{id: streamID, status: domain.StatusIdle}
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		trackSourceStateOnTicks(ctx, streamID, src, ticks)
+	}()
+
+	src.mu.Lock()
+	src.status = domain.StatusRunning
+	src.mu.Unlock()
+	ticks <- time.Now()
+	cancel()
+	<-done
+
+	if got := testutil.ToFloat64(telemetry.StreamState.WithLabelValues(streamID, "connected")); got != 1 {
+		t.Errorf("connected gauge = %v, want 1 after tracker tick", got)
 	}
 }
 
@@ -206,6 +236,7 @@ func TestStreamManager_RemoveExisting(t *testing.T) {
 	manager.mu.Lock()
 	manager.sources[src.id] = src
 	manager.mu.Unlock()
+	telemetry.SetStreamState(src.id, "connected")
 
 	err := manager.Remove("rm-me")
 	if err != nil {
@@ -220,6 +251,7 @@ func TestStreamManager_RemoveExisting(t *testing.T) {
 	if len(streams) != 0 {
 		t.Errorf("expected 0 streams after removal, got %d", len(streams))
 	}
+	assertStreamStateDeleted(t, src.id)
 }
 
 func TestStreamManager_RemoveNotFound(t *testing.T) {
@@ -263,6 +295,7 @@ func TestStreamManager_StopAll(t *testing.T) {
 	manager.mu.Lock()
 	for _, s := range sources {
 		manager.sources[s.id] = s
+		telemetry.SetStreamState(s.id, "connected")
 	}
 	manager.mu.Unlock()
 
@@ -272,10 +305,20 @@ func TestStreamManager_StopAll(t *testing.T) {
 		if !s.isStopped() {
 			t.Errorf("source %q should have been stopped", s.id)
 		}
+		assertStreamStateDeleted(t, s.id)
 	}
 
 	if len(manager.List()) != 0 {
 		t.Error("all sources should be cleared after StopAll")
+	}
+}
+
+func assertStreamStateDeleted(t *testing.T, streamID string) {
+	t.Helper()
+	for _, state := range []string{"connected", "reconnecting", "errored", "stopped"} {
+		if telemetry.StreamState.DeleteLabelValues(streamID, state) {
+			t.Errorf("stream state series %q still exists for %q", state, streamID)
+		}
 	}
 }
 

@@ -26,6 +26,7 @@ type StreamManager struct {
 	pipelineCancels map[string]context.CancelFunc // cancels batch goroutines on pipeline swap
 	cancels         map[string]context.CancelFunc
 	dones           map[string]chan struct{}
+	stateDones      map[string]chan struct{}
 	runtimes        map[string]*streamRuntime
 	broker          *broker.Broker
 	store           *store.StreamStore // nil in tests
@@ -41,6 +42,7 @@ func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager 
 		pipelineCancels: make(map[string]context.CancelFunc),
 		cancels:         make(map[string]context.CancelFunc),
 		dones:           make(map[string]chan struct{}),
+		stateDones:      make(map[string]chan struct{}),
 		runtimes:        make(map[string]*streamRuntime),
 		broker:          brk,
 		store:           st,
@@ -105,12 +107,16 @@ func (m *StreamManager) Remove(id string) error {
 	if done, ok := m.dones[id]; ok {
 		<-done
 	}
+	if stateDone, ok := m.stateDones[id]; ok {
+		<-stateDone
+	}
 
 	delete(m.sources, id)
 	delete(m.pipelineRefs, id)
 	delete(m.pipelineCancels, id)
 	delete(m.cancels, id)
 	delete(m.dones, id)
+	delete(m.stateDones, id)
 	delete(m.runtimes, id)
 	telemetry.DeleteStreamState(id)
 
@@ -237,6 +243,13 @@ func (m *StreamManager) StopAll() {
 				<-d
 			}(done)
 		}
+		if stateDone, ok := m.stateDones[id]; ok {
+			wg.Add(1)
+			go func(d chan struct{}) {
+				defer wg.Done()
+				<-d
+			}(stateDone)
+		}
 		m.logger.Info("Source stopped", "id", id)
 	}
 
@@ -251,6 +264,7 @@ func (m *StreamManager) StopAll() {
 	m.pipelineCancels = make(map[string]context.CancelFunc)
 	m.cancels = make(map[string]context.CancelFunc)
 	m.dones = make(map[string]chan struct{})
+	m.stateDones = make(map[string]chan struct{})
 	m.runtimes = make(map[string]*streamRuntime)
 }
 
@@ -258,6 +272,7 @@ func (m *StreamManager) StopAll() {
 func (m *StreamManager) startSourceLocked(id string, source connector.StreamSource, cfg domain.StreamSourceConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	stateDone := make(chan struct{})
 
 	// Pipeline gets its own context so batch goroutines can be cancelled independently
 	pipeCtx, pipeCancel := context.WithCancel(context.Background())
@@ -266,6 +281,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	m.cancels[id] = cancel
 	m.pipelineCancels[id] = pipeCancel
 	m.dones[id] = done
+	m.stateDones[id] = stateDone
 	runtime := &streamRuntime{}
 	m.runtimes[id] = runtime
 
@@ -295,34 +311,36 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 
 	go func() {
 		defer close(done)
-		defer func() {
-			telemetry.SetStreamState(id, metricState(source.Status()))
-		}()
 		if err := source.Start(ctx, connector.PublishFunc(instrumentedPublish)); err != nil && ctx.Err() == nil {
 			m.logger.Error("Source terminated with error", "id", id, "error", err)
 		}
 	}()
 
-	go trackSourceState(ctx, id, source)
+	go func() {
+		defer close(stateDone)
+		trackSourceState(ctx, id, source)
+	}()
 
 	m.logger.Info("Source registered and started", "id", id)
 }
 
 func trackSourceState(ctx context.Context, id string, source connector.StreamSource) {
-	defer telemetry.DeleteStreamState(id)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	trackSourceStateOnTicks(ctx, id, source, ticker.C)
+}
 
+func trackSourceStateOnTicks(ctx context.Context, id string, source connector.StreamSource, ticks <-chan time.Time) {
 	update := func() {
 		telemetry.SetStreamState(id, metricState(source.Status()))
 	}
 	update()
 
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 			update()
 		}
 	}
