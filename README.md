@@ -224,7 +224,7 @@ When a connector emits raw binary data, Nephtys publishes it directly to NATS in
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check (Verifies internal NATS connectivity) |
-| `GET` | `/v1/streams` | List all active streams and operational statuses |
+| `GET` | `/v1/streams` | List active streams with connector status, health, and last-message time |
 | `POST` | `/v1/streams` | Register, save, and start a new stream |
 | `DELETE` | `/v1/streams/{id}` | Halt stream ingest and remove it from configuration |
 | `PUT` | `/v1/streams/{id}/pipeline` | Update a running stream pipeline |
@@ -239,6 +239,8 @@ Control the global behavior of the instance via environment variables.
 | `NEPHTYS_PORT` | `3002` | Port for the management REST API |
 | `NEPHTYS_ADMIN_TOKEN` | unset | Optional bearer token for stream-management endpoints |
 | `NEPHTYS_LOG_LEVEL` | `info` | Operational logging verbosity (`debug`, `info`, `warn`, `error`) |
+
+Each `GET /v1/streams` item includes `status`, derived `health` (`healthy`, `degraded`, or `errored`), and `last_message_at` once the source has emitted an event. Prometheus exposes the same connector state as the one-hot `nephtys_stream_state{stream_id,state}` gauge.
 
 ### CLI flags
 

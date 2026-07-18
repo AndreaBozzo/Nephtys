@@ -31,6 +31,14 @@ var (
 		Help: "The total number of events published to NATS",
 	}, []string{"stream_id"})
 
+	// StreamState is a one-hot gauge for the current operational state of each
+	// registered stream. Exactly one of connected, reconnecting, errored, or
+	// stopped is set to 1 for a stream; the other states are set to 0.
+	StreamState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "nephtys_stream_state",
+		Help: "Current operational state of a Nephtys stream (one-hot).",
+	}, []string{"stream_id", "state"})
+
 	// EventProcessingDuration measures wall-clock time from ingestion (entering
 	// the instrumented publish path) to the final NATS publish call returning,
 	// in seconds. Buckets cover sub-millisecond hot paths through ~1s tail
@@ -58,3 +66,23 @@ var (
 		Help: "Total entries evicted from the dedup LRU due to capacity (not TTL).",
 	}, []string{"stream_id"})
 )
+
+var streamStates = [...]string{"connected", "reconnecting", "errored", "stopped"}
+
+// SetStreamState updates the one-hot state gauge for a stream.
+func SetStreamState(streamID, current string) {
+	for _, state := range streamStates {
+		value := 0.0
+		if state == current {
+			value = 1
+		}
+		StreamState.WithLabelValues(streamID, state).Set(value)
+	}
+}
+
+// DeleteStreamState removes all state series for an unregistered stream.
+func DeleteStreamState(streamID string) {
+	for _, state := range streamStates {
+		StreamState.DeleteLabelValues(streamID, state)
+	}
+}
