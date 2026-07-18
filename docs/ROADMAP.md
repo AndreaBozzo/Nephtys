@@ -85,15 +85,15 @@ One theme per month, sized for the ~20% evening-time budget (Mercury keeps ~80%)
 
 ## 5. Quick wins (30–60 min slots)
 
-| # | Quick win | Cost | Why |
-|---|---|---|---|
-| W1 | Merge dependabot `golang.org/x/net` PR | 10 min | Open security-relevant bump. |
-| W2 | GitHub repo topics + description + social-preview image | 20 min | Zero-cost discoverability (G5). |
-| W3 | `CHANGELOG.md` back-filled for v0.1.0/v0.2.0 | 30 min | Prerequisite for v0.3.0 tag. |
-| W4 | arXiv/self-hosted preprint link once IEEE policy allows | 30 min | Citable artifact drives adoption. |
-| W5 | Issue templates + `good-first-issue` seeding | 45 min | Lowers first-contributor friction. |
-| W6 | README "Comparison" section citing the controlled Node-RED numbers | 45 min | The 1/3–1/6 resource story belongs in the most-read file. |
-| W7 | `docs/examples/` config for an agent-telemetry stream | 45 min | Fourth use-case profile becomes concrete. |
+| # | Quick win | Cost | Status | Why |
+|---|---|---|---|---|
+| W1 | Merge dependabot `golang.org/x/net` PR | 10 min | ✅ 2026-07-18 | Open security-relevant bump. |
+| W2 | GitHub repo topics + description (social-preview image still manual) | 20 min | ✅ 2026-07-18 | Zero-cost discoverability (G5). |
+| W3 | `CHANGELOG.md` back-filled for v0.1.0/v0.2.0 | 30 min | ✅ 2026-07-18 | Prerequisite for v0.3.0 tag. |
+| W4 | arXiv/self-hosted preprint link once IEEE policy allows | 30 min | Open (blocked on camera-ready/IEEE policy) | Citable artifact drives adoption. |
+| W5 | Issue templates + `good-first-issue` seeding | 45 min | ✅ (templates pre-existed; issues seeded) | Lowers first-contributor friction. |
+| W6 | README "Performance" section citing the controlled Node-RED numbers | 45 min | ✅ 2026-07-18 | The 1/3–1/6 resource story belongs in the most-read file. |
+| W7 | `docs/examples/` config for an agent-telemetry stream | 45 min | ✅ 2026-07-18 (`agent_telemetry_webhook.json`, validated via `--config-check`) | Fourth use-case profile becomes concrete. |
 
 ---
 

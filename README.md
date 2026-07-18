@@ -22,6 +22,7 @@ Nephtys ingests live data streams (WebSocket, webhooks, Server-Sent Events, gRPC
 - [Why Nephtys?](#why-nephtys)
 - [Use Cases](#use-cases)
 - [Key Features](#key-features)
+- [Performance](#performance)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
 - [Usage Examples](#usage)
@@ -68,6 +69,19 @@ See [`docs/examples/`](docs/examples/) for runnable configurations covering each
 - **No extra infrastructure** — runs alongside NATS; no separate database, cache, or coordination service required.
 - **Self-healing pull connectors** — `websocket` and `sse` reconnect with exponential backoff; `rest_poller` retries on the next tick. (Inbound `webhook` and `grpc` sources delegate retry to the upstream client — see [Supported Connectors](#supported-connectors).)
 - **Edge-friendly footprint** — single Go binary, low memory, suitable for resource-constrained deployments.
+
+## Performance
+
+From the peer-reviewed evaluation for the [UIC 2026 paper](#citation): Nephtys and Node-RED 5.0.1 processed the **same deterministic 12,000-event sensor workload** (identical pipeline semantics, matched accepted-event hashes, three interleaved trials, NATS JetStream sink for both). Same output — a fraction of the footprint:
+
+| Metric (mean ± SD, 3 trials) | Nephtys | Node-RED 5.0.1 |
+|---|---|---|
+| Tool RSS | **19.1 ± 0.1 MB** | 109.6 ± 0.4 MB |
+| Tool + NATS RSS | **27.2 ± 0.1 MB** | 117.3 ± 0.4 MB |
+| CPU (100% = 1 logical core) | **0.03 ± 0.02%** | 0.31 ± 0.08% |
+| Byte / message reduction | 67.3% / 98.7% | 67.3% / 98.7% |
+
+Both systems achieved identical filtering results; end-to-end p95 latency was equivalent (batch-window dominated). Scope: single node, one workload profile — full protocol, raw counters, and scripts in the [companion repository](https://github.com/AndreaBozzo/uic2026-nephtys/).
 
 ## Architecture
 
