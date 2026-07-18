@@ -79,7 +79,7 @@ From the peer-reviewed evaluation for the [UIC 2026 paper](#citation): Nephtys a
 | Tool RSS | **19.1 ± 0.1 MB** | 109.6 ± 0.4 MB |
 | Tool + NATS RSS | **27.2 ± 0.1 MB** | 117.3 ± 0.4 MB |
 | CPU (100% = 1 logical core) | **0.03 ± 0.02%** | 0.31 ± 0.08% |
-| Byte / message reduction | 67.3% / 98.7% | 67.3% / 98.7% |
+| Bandwidth reduction (bytes / messages) | 67.3% / 98.7% | 67.3% / 98.7% |
 
 Both systems achieved identical filtering results; end-to-end p95 latency was equivalent (batch-window dominated). Scope: single node, one workload profile — full protocol, raw counters, and scripts in the [companion repository](https://github.com/AndreaBozzo/uic2026-nephtys/).
 
