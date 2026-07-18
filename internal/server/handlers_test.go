@@ -226,6 +226,22 @@ func TestValidateStreamConfig(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "websocket with on_connect_send",
+			cfg: domain.StreamSourceConfig{
+				ID: "test", Kind: "websocket", URL: "wss://example.com/ws", Topic: "t",
+				Websocket: &domain.WebsocketConfig{OnConnectSend: domain.StringList{`{"action":"subscribe"}`}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "websocket with empty on_connect_send entry",
+			cfg: domain.StreamSourceConfig{
+				ID: "test", Kind: "websocket", URL: "wss://example.com/ws", Topic: "t",
+				Websocket: &domain.WebsocketConfig{OnConnectSend: domain.StringList{""}},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

@@ -160,6 +160,14 @@ func validateStreamConfig(cfg domain.StreamSourceConfig) error {
 		}
 	}
 
+	if cfg.Websocket != nil {
+		for i, msg := range cfg.Websocket.OnConnectSend {
+			if msg == "" {
+				return fmt.Errorf("websocket on_connect_send[%d] must not be empty", i)
+			}
+		}
+	}
+
 	// Port validation for webhook and gRPC
 	if cfg.Webhook != nil && cfg.Webhook.Port != "" {
 		if err := validatePort(cfg.Webhook.Port); err != nil {
