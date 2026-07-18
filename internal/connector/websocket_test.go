@@ -3,9 +3,11 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -326,6 +328,87 @@ func TestWebSocket_OnConnectSendResentOnReconnect(t *testing.T) {
 				t.Fatalf("timed out waiting for round %d frame %d", round, i)
 			}
 		}
+	}
+
+	cancel()
+	source.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for source to stop")
+	}
+}
+
+func TestWebSocket_SendOnConnectWriteError(t *testing.T) {
+	srv := startWSServer(t, nil)
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(srv.URL), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_ = conn.Close()
+
+	src := NewWebSocketSource("ws-err", "wss://x", "t", &domain.WebsocketConfig{
+		OnConnectSend: domain.StringList{`{"action":"subscribe"}`},
+	})
+	if err := src.sendOnConnect(conn); err == nil {
+		t.Fatal("expected error writing to closed connection")
+	}
+}
+
+func TestWebSocket_OnConnectSendRecoversFromAbortedConnection(t *testing.T) {
+	frames := []string{`{"action":"subscribe","channel":"a"}`}
+
+	// The first connection is aborted with a TCP RST right after the
+	// handshake, so the post-connect send hits a dead connection; the
+	// source must retry and deliver the frame on the next connection.
+	var connCount atomic.Int32
+	received := make(chan string, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		if connCount.Add(1) == 1 {
+			if tcp, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = conn.Close()
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			received <- string(msg)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	source := NewWebSocketSource("ws-abort", wsURL(srv.URL), "test.topic", &domain.WebsocketConfig{
+		OnConnectSend: domain.StringList(frames),
+	})
+
+	publish := PublishFunc(func(topic string, event domain.StreamEvent) error { return nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- source.Start(ctx, publish)
+	}()
+
+	select {
+	case got := <-received:
+		if got != frames[0] {
+			t.Fatalf("got %q, want %q", got, frames[0])
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for frame after aborted connection")
+	}
+	if connCount.Load() < 2 {
+		t.Fatalf("expected at least 2 connections, got %d", connCount.Load())
 	}
 
 	cancel()
