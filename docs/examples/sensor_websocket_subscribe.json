@@ -1,0 +1,24 @@
+{
+  "id": "iot_gateway_telemetry",
+  "kind": "websocket",
+  "url": "wss://gateway.example.com/ws",
+  "topic": "nephtys.stream.sensors.gateway",
+  "websocket": {
+    "on_connect_send": [
+      "{\"action\":\"auth\",\"token\":\"REPLACE_WITH_GATEWAY_TOKEN\"}",
+      "{\"action\":\"subscribe\",\"channels\":[\"telemetry/temperature\",\"telemetry/humidity\"]}"
+    ]
+  },
+  "pipeline": {
+    "dedup": {
+      "enabled": true,
+      "ttl": "30s"
+    },
+    "enrich": {
+      "tags": {
+        "site": "plant-a",
+        "kind": "environment"
+      }
+    }
+  }
+}

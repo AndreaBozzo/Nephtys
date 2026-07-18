@@ -293,7 +293,7 @@ func eventPayloadSize(event domain.StreamEvent) int {
 func sourceFromConfig(cfg domain.StreamSourceConfig) (connector.StreamSource, error) {
 	switch cfg.Kind {
 	case "websocket":
-		return connector.NewWebSocketSource(cfg.ID, cfg.URL, cfg.Topic), nil
+		return connector.NewWebSocketSource(cfg.ID, cfg.URL, cfg.Topic, cfg.Websocket), nil
 	case "rest_poller":
 		return connector.NewRESTPollerSource(cfg.ID, cfg.URL, cfg.Topic, cfg.RestPoller), nil
 	case "webhook":

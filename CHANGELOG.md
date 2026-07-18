@@ -9,6 +9,7 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ## [Unreleased]
 
 ### Added
+- Optional `websocket.on_connect_send` field (string or list of strings) on WebSocket stream configs: frames are sent verbatim after every successful handshake, including reconnects. Unlocks sources that require a subscribe/auth frame. Trading-style and sensor-style examples in `docs/examples/`. (#10)
 - Post-acceptance roadmap (Aug 2026 – Jan 2027) with three-pillar direction: ops core, visibility, agent-native frontier.
 - README comparison section citing the controlled Node-RED benchmark from the UIC 2026 camera-ready evaluation.
 - Agent-telemetry example stream config in `docs/examples/`.

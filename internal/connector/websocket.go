@@ -22,10 +22,11 @@ const (
 
 // WebSocketSource connects to a WebSocket endpoint and emits StreamEvents.
 type WebSocketSource struct {
-	id     string
-	url    string
-	topic  string
-	logger *slog.Logger
+	id            string
+	url           string
+	topic         string
+	onConnectSend []string
+	logger        *slog.Logger
 
 	mu     sync.RWMutex
 	conn   *websocket.Conn
@@ -33,14 +34,19 @@ type WebSocketSource struct {
 	cancel context.CancelFunc
 }
 
-// NewWebSocketSource creates a new WebSocket connector.
-func NewWebSocketSource(id, url, topic string) *WebSocketSource {
+// NewWebSocketSource creates a new WebSocket connector. cfg may be nil.
+func NewWebSocketSource(id, url, topic string, cfg *domain.WebsocketConfig) *WebSocketSource {
+	var onConnectSend []string
+	if cfg != nil {
+		onConnectSend = cfg.OnConnectSend
+	}
 	return &WebSocketSource{
-		id:     id,
-		url:    url,
-		topic:  topic,
-		status: domain.StatusIdle,
-		logger: slog.With("connector", id),
+		id:            id,
+		url:           url,
+		topic:         topic,
+		onConnectSend: onConnectSend,
+		status:        domain.StatusIdle,
+		logger:        slog.With("connector", id),
 	}
 }
 
@@ -107,6 +113,14 @@ func (w *WebSocketSource) Start(ctx context.Context, publish PublishFunc) error 
 			continue
 		}
 
+		if err := w.sendOnConnect(conn); err != nil {
+			_ = conn.Close()
+			w.logger.Error("Post-connect send failed", "error", err)
+			w.setStatus(domain.StatusError)
+			attempt++
+			continue
+		}
+
 		w.setStatus(domain.StatusRunning)
 		w.logger.Info("Connected")
 		attempt = 0 // reset on successful connection
@@ -132,6 +146,17 @@ func (w *WebSocketSource) Start(ctx context.Context, publish PublishFunc) error 
 		w.setStatus(domain.StatusError)
 		attempt++
 	}
+}
+
+// sendOnConnect writes the configured post-connect frames verbatim as text
+// messages. It runs after every successful handshake, including reconnects.
+func (w *WebSocketSource) sendOnConnect(conn *websocket.Conn) error {
+	for _, msg := range w.onConnectSend {
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (w *WebSocketSource) readLoop(ctx context.Context, conn *websocket.Conn, publish PublishFunc) error {

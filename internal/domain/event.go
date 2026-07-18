@@ -1,7 +1,10 @@
 // Package domain defines the core data structures shared across Nephtys.
 package domain
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 const (
 	// ContentTypeJSON is the default StreamEvent envelope encoding.
@@ -52,7 +55,34 @@ type StreamSourceConfig struct {
 	Webhook    *WebhookConfig    `json:"webhook,omitempty"`
 	Grpc       *GrpcConfig       `json:"grpc,omitempty"`
 	Sse        *SseConfig        `json:"sse,omitempty"`
+	Websocket  *WebsocketConfig  `json:"websocket,omitempty"`
 	Pipeline   *PipelineConfig   `json:"pipeline,omitempty"`
+}
+
+// StringList is a []string that also accepts a single JSON string,
+// so config authors can write "x" or ["x", "y"] interchangeably.
+type StringList []string
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (s *StringList) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*s = StringList{single}
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(data, &list); err != nil {
+		return fmt.Errorf("must be a string or an array of strings")
+	}
+	*s = StringList(list)
+	return nil
+}
+
+// WebsocketConfig configures a WebSocket source.
+type WebsocketConfig struct {
+	// OnConnectSend frames are sent verbatim as text messages after every
+	// successful handshake, including reconnects.
+	OnConnectSend StringList `json:"on_connect_send,omitempty"`
 }
 
 // SseConfig configures a Server-Sent Events source.

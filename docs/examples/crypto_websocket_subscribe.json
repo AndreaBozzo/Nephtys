@@ -1,0 +1,25 @@
+{
+  "id": "coinbase_btc_ticker",
+  "kind": "websocket",
+  "url": "wss://ws-feed.exchange.coinbase.com",
+  "topic": "nephtys.stream.crypto.coinbase.btc",
+  "websocket": {
+    "on_connect_send": "{\"type\":\"subscribe\",\"product_ids\":[\"BTC-USD\"],\"channels\":[\"ticker\"]}"
+  },
+  "pipeline": {
+    "transform": {
+      "mapping": {
+        "price": "price",
+        "symbol": "product_id",
+        "best_bid": "best_bid",
+        "best_ask": "best_ask"
+      }
+    },
+    "enrich": {
+      "tags": {
+        "source": "coinbase",
+        "kind": "ticker"
+      }
+    }
+  }
+}

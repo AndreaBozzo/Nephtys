@@ -79,7 +79,7 @@ func wsURL(httpURL string) string {
 }
 
 func TestWebSocket_IDAndStatus(t *testing.T) {
-	src := NewWebSocketSource("ws-id", "wss://x", "t")
+	src := NewWebSocketSource("ws-id", "wss://x", "t", nil)
 	if src.ID() != "ws-id" {
 		t.Errorf("expected ws-id, got %s", src.ID())
 	}
@@ -92,7 +92,7 @@ func TestWebSocket_ReceivesMessages(t *testing.T) {
 	messages := []string{`{"price":100}`, `{"price":200}`}
 	srv := startWSServer(t, messages)
 
-	source := NewWebSocketSource("ws-test", wsURL(srv.URL), "test.topic")
+	source := NewWebSocketSource("ws-test", wsURL(srv.URL), "test.topic", nil)
 
 	received := make(chan domain.StreamEvent, 10)
 	publish := PublishFunc(func(topic string, event domain.StreamEvent) error {
@@ -138,7 +138,7 @@ func TestWebSocket_InferBinanceMetadata(t *testing.T) {
 	messages := []string{`{"e":"trade","E":1700000000001,"t":12345,"s":"BTCUSDT","p":"42000"}`}
 	srv := startWSServer(t, messages)
 
-	source := NewWebSocketSource("binance_btc", wsURL(srv.URL), "test.topic")
+	source := NewWebSocketSource("binance_btc", wsURL(srv.URL), "test.topic", nil)
 
 	received := make(chan domain.StreamEvent, 1)
 	publish := PublishFunc(func(topic string, event domain.StreamEvent) error {
@@ -185,7 +185,7 @@ func TestWebSocket_BinaryMessage(t *testing.T) {
 		{messageType: websocket.BinaryMessage, payload: []byte{0xff, 0x00, 0x01}},
 	})
 
-	source := NewWebSocketSource("ws-bin", wsURL(srv.URL), "test.topic")
+	source := NewWebSocketSource("ws-bin", wsURL(srv.URL), "test.topic", nil)
 	received := make(chan domain.StreamEvent, 1)
 	publish := PublishFunc(func(topic string, event domain.StreamEvent) error {
 		received <- event
@@ -226,7 +226,7 @@ func TestWebSocket_BinaryMessage(t *testing.T) {
 func TestWebSocket_NonJSONTextIsWrapped(t *testing.T) {
 	srv := startWSServer(t, []string{"plain text"})
 
-	source := NewWebSocketSource("ws-text", wsURL(srv.URL), "test.topic")
+	source := NewWebSocketSource("ws-text", wsURL(srv.URL), "test.topic", nil)
 	received := make(chan domain.StreamEvent, 1)
 	publish := PublishFunc(func(topic string, event domain.StreamEvent) error {
 		received <- event
@@ -278,11 +278,70 @@ func TestInferWebSocketMetadata_DepthUpdateUsesExchangeSequence(t *testing.T) {
 	}
 }
 
+func TestWebSocket_OnConnectSendResentOnReconnect(t *testing.T) {
+	frames := []string{`{"action":"auth","token":"x"}`, `{"action":"subscribe","channel":"a"}`}
+
+	// Server reads the two configured frames, reports them, then drops the
+	// connection — forcing the client to reconnect and re-send.
+	received := make(chan string, 20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		for i := 0; i < len(frames); i++ {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			received <- string(msg)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	source := NewWebSocketSource("ws-sub", wsURL(srv.URL), "test.topic", &domain.WebsocketConfig{
+		OnConnectSend: domain.StringList(frames),
+	})
+
+	publish := PublishFunc(func(topic string, event domain.StreamEvent) error { return nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- source.Start(ctx, publish)
+	}()
+
+	// Expect the frames in order on the first connection, then again after the
+	// server-initiated disconnect (reconnect backoff starts at 1s).
+	for round := 0; round < 2; round++ {
+		for i, want := range frames {
+			select {
+			case got := <-received:
+				if got != want {
+					t.Fatalf("round %d frame %d: got %q, want %q", round, i, got, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("timed out waiting for round %d frame %d", round, i)
+			}
+		}
+	}
+
+	cancel()
+	source.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for source to stop")
+	}
+}
+
 func TestWebSocket_Stop(t *testing.T) {
 	// Server that stays open
 	srv := startWSServer(t, nil)
 
-	source := NewWebSocketSource("ws-stop", wsURL(srv.URL), "test.topic")
+	source := NewWebSocketSource("ws-stop", wsURL(srv.URL), "test.topic", nil)
 
 	publish := PublishFunc(func(topic string, event domain.StreamEvent) error {
 		return nil
