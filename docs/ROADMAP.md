@@ -78,7 +78,7 @@ One theme per month, sized for the ~20% evening-time budget (Mercury keeps ~80%)
 ### Month 6 (Jan 2027) — v1.0.0 + frontier prototype
 
 - **v1.0.0 cut**: API-freeze review, SemVer commitment documented, CHANGELOG discipline locked in.
-- **MCP bridge prototype (frontier)**: a small sidecar (separate binary or `nephtys mcp` subcommand) exposing registered streams as MCP resources — list streams, tail a subject, fetch last-N events via JetStream. Prototype scope: read-only, no auth beyond the existing token. This is the "Nephtys feeds agents" claim made runnable, and the single best story for riding the 2026 agent wave.
+- **MCP bridge prototype (frontier)**: a small sidecar (separate binary or `nephtys mcp` subcommand) exposing registered streams as MCP resources — list streams, tail a subject, fetch last-N events via JetStream. Prototype scope: read-only, no auth beyond the existing token. This is the "Nephtys feeds agents" claim made runnable, and the single best story for riding the 2026 agent wave. **Primary target client: Claude Code** (the maintainer's primary agent companion; Codex second) — success looks like `claude mcp add nephtys` giving an agent live stream awareness with zero extra config.
 - **CloudEvents opt-in output (D3)** if slack remains; otherwise it moves to the next horizon.
 
 ---
