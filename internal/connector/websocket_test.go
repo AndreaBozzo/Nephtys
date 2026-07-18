@@ -342,9 +342,12 @@ func TestWebSocket_OnConnectSendResentOnReconnect(t *testing.T) {
 func TestWebSocket_SendOnConnectWriteError(t *testing.T) {
 	srv := startWSServer(t, nil)
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL(srv.URL), nil)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL(srv.URL), nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
 	}
 	_ = conn.Close()
 
