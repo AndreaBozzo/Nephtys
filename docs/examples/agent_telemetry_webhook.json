@@ -1,0 +1,22 @@
+{
+  "id": "agent_telemetry",
+  "kind": "webhook",
+  "topic": "nephtys.stream.agents.telemetry",
+  "webhook": {
+    "port": "3010",
+    "path": "/agent/events",
+    "auth_token": "change-me"
+  },
+  "pipeline": {
+    "dedup": {
+      "enabled": true,
+      "ttl": "30s"
+    },
+    "enrich": {
+      "tags": {
+        "profile": "agent-telemetry",
+        "env": "dev"
+      }
+    }
+  }
+}
