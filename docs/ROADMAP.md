@@ -52,6 +52,7 @@ One theme per month, sized for the ~20% evening-time budget (Mercury keeps ~80%)
 - **WebSocket post-connect hook** (G1): optional `on_connect_send` (string or list), sent verbatim after handshake and re-sent on reconnect. Test against mock WS server. ~4 h.
 - **Per-stream state visibility** (G2): `nephtys_stream_state{stream_id,state}` gauge driven by `StreamSource.Status()`; additive `last_message_at` + `health` fields on `StreamInfo`. ~5 h.
 - Merge open dependabot PR; tag **v0.3.0** with a first `CHANGELOG.md` (starts G3).
+- **Published container image**: GHCR workflow (linux/amd64 + arm64) so `docker run ghcr.io/andreabozzo/nephtys` becomes the 30-second quickstart. Split from the v1.0 release-automation work — the Dockerfile exists; only the publish pipeline is missing. ~1 h.
 
 ### Month 2 (Sep 2026) — Announce & reference deployment, part 1
 
@@ -73,7 +74,7 @@ One theme per month, sized for the ~20% evening-time budget (Mercury keeps ~80%)
 
 - **Schema/version envelope on `StreamEvent` (B4)**: optional additive `schema_version`; migration notes for Mercury.
 - **Public gRPC stub path (B6)**: move generated stubs out of `internal/` to an importable `github.com/AndreaBozzo/Nephtys/proto/nephtys/v1`.
-- **Release automation**: GoReleaser (or equivalent) — multi-arch binaries incl. `linux/arm64` (the edge claim deserves an ARM artifact), image on GHCR.
+- **Release automation**: GoReleaser (or equivalent) — multi-arch binaries incl. `linux/arm64` (the edge claim deserves an ARM artifact). The GHCR image ships in Month 1; this step may unify the two pipelines without regressing published tags.
 
 ### Month 6 (Jan 2027) — v1.0.0 + frontier prototype
 
