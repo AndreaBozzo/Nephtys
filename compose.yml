@@ -1,6 +1,8 @@
 services:
   nats:
-    image: nats:latest
+    # alpine variant ships BusyBox wget, which the healthcheck below needs.
+    # The default distroless nats image has no wget/shell, so the check never passes.
+    image: nats:alpine
     container_name: nephtys_nats
     restart: always
     ports:
