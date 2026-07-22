@@ -18,6 +18,9 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ### Changed
 - Citation updated to reflect the accepted status of the IEEE UIC 2026 short paper.
 
+### Fixed
+- Compose `nats` service now uses the `nats:alpine` image so its `wget`-based healthcheck actually runs; the default distroless image has no `wget` or shell, leaving the container perpetually `unhealthy` despite a working server.
+
 ### Security
 - Bumped `golang.org/x/net` 0.54.0 → 0.56.0 and the Go modules dependency group (moderate advisory).
 
