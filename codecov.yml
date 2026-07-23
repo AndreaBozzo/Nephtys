@@ -15,10 +15,13 @@ coverage:
 
 # Exclude generated and non-runtime files from coverage accounting.
 # Generated protobuf has no business logic to test; benchmark _test.go
-# files are not exercised by `go test` (only by `go test -bench=.`).
+# files are not exercised by `go test` (only by `go test -bench=.`); the
+# docs/benchmarks harness is standalone tooling (a load generator), not
+# runtime logic, so it is compiled/linted in CI but not coverage-accounted.
 ignore:
   - "**/*.pb.go"
   - "**/*_grpc.pb.go"
   - "internal/grpc/streamer/"
   - "**/bench_test.go"
   - "proto/"
+  - "docs/benchmarks/"
