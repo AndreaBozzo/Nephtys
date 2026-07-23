@@ -14,6 +14,7 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 - Outcome-based roadmap covering the operational core, public proof, stable platform, and focused experiments without calendar commitments.
 - README comparison section citing the controlled Node-RED benchmark from the UIC 2026 camera-ready evaluation.
 - Agent-telemetry example stream config in `docs/examples/`.
+- `docs/benchmarks/` with a reusable wall-power characterization harness (Shelly meter sampling, exact-rate SSE load generator) and preliminary Raspberry Pi 5 power-vs-throughput results. Explicitly scoped as exploratory — the definitive controlled comparison lives in the companion `uic2026-nephtys` repo.
 
 ### Changed
 - Citation updated to reflect the accepted status of the IEEE UIC 2026 short paper.
