@@ -1,19 +1,51 @@
 # Benchmarks
 
+## Edge comparison against Node-RED on a Raspberry Pi 5 (definitive)
+
+Run on 2026-07-25 under the formal protocol in the companion repo
+[`AndreaBozzo/uic2026-nephtys`](https://github.com/AndreaBozzo/uic2026-nephtys)
+(`RASPBERRY_PI_BENCHMARK.md`, orchestrator `demo/comparison/run-pi-comparison.ps1`),
+and reported in the accepted IEEE UIC 2026 short paper. Nephtys `c146ee7` against
+Node-RED 5.0.1, both native on a Pi 5 (4 GB) with NATS, three interleaved trials each,
+12,000 deterministic events per slot after a discarded 1,200-event warm-up.
+
+| Metric | Nephtys | Node-RED | Ratio |
+|---|---:|---:|---:|
+| Tool RSS | 19.51 ± 0.07 MB | 128.47 ± 0.44 MB | **6.59×** |
+| Tool + NATS RSS | 38.85 ± 0.10 MB | 147.07 ± 0.48 MB | 3.79× |
+| CPU (100 % = 1 core) | 0.32 ± 0.00 % | 0.72 ± 0.01 % | 2.23× |
+| Latency p95 | 2009 ± 1 ms | 2013 ± 1 ms | — |
+| Wall power | 3.610 ± 0.005 W | 3.584 ± 0.014 W | 0.99× |
+
+All six slots were valid on the first attempt, the SoC never throttled
+(`throttled=0x0` across 1,316 samples, 45–51 °C), and **every slot produced the same
+retained-event sequence hash and the same 155 output batches / 7,733 retained events /
+67.30 % byte and 98.71 % message reduction as the x86-64 run** — so the pipelines are
+equivalent across architectures, not merely similar.
+
+**On energy, no claim is made in either direction.** Nephtys measured 0.70 % *higher*
+wall power than Node-RED — the opposite sign to the memory result, and below one
+quantisation step of the meter's power reading. The board draws ~3.0 W idle, so at
+40 events/s the platform floor dominates and a 6.59× resident-memory advantage does
+**not** become measurable energy savings. Read the footprint advantage as headroom for
+co-located workloads on a small board, not as reduced power draw.
+
+Raw data, per-second samples, per-slot logs, the recorded protocol deviations, and the
+validity-gate record are in
+[`demo/comparison/results/pi-20260725T075732Z/`](https://github.com/AndreaBozzo/uic2026-nephtys/tree/main/demo/comparison/results/pi-20260725T075732Z)
+(see its `notes.md`).
+
 ## Power characterization (preliminary, exploratory)
 
 > **Scope — read first.** This is an **exploratory, single-system** power-vs-throughput
-> characterization of Nephtys on a Raspberry Pi 5. It is **not** the project's
-> definitive energy evaluation. The definitive result is a **controlled Nephtys-vs-Node-RED
-> wall-power comparison** run under a formal protocol (wired Ethernet, interleaved
-> multi-slot runs, mean ± sample SD, validity gates) — see
-> `RASPBERRY_PI_BENCHMARK.md` and `demo/comparison/` in the companion repo
-> [`AndreaBozzo/uic2026-nephtys`](https://github.com/AndreaBozzo/uic2026-nephtys).
+> characterization of Nephtys on a Raspberry Pi 5, superseded as headline evidence by
+> the controlled comparison above. It remains useful for the one thing the controlled
+> run does not provide: how Nephtys' own power scales *with load*, since that run
+> measures a single 40 events/s operating point.
 >
 > These numbers were collected over **Wi-Fi with a single trial per point**, so they
-> carry more variance and are not directly comparable to a wired, repeated protocol.
-> Treat them as an order-of-magnitude characterization of *how Nephtys' own power
-> scales with load*, useful for capacity intuition — not as headline claims.
+> carry more variance and are not directly comparable to the wired, repeated protocol.
+> Treat them as an order-of-magnitude characterization, not as headline claims.
 
 ### What it measures
 

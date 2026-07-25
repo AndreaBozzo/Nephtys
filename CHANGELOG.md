@@ -15,6 +15,7 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 - README comparison section citing the controlled Node-RED benchmark from the UIC 2026 camera-ready evaluation.
 - Agent-telemetry example stream config in `docs/examples/`.
 - `docs/benchmarks/` with a reusable wall-power characterization harness (Shelly meter sampling, exact-rate SSE load generator) and preliminary Raspberry Pi 5 power-vs-throughput results. Explicitly scoped as exploratory — the definitive controlled comparison lives in the companion `uic2026-nephtys` repo.
+- Definitive Raspberry Pi 5 edge comparison against Node-RED 5.0.1 in `docs/benchmarks/`: 19.51 ± 0.07 MB vs 128.47 ± 0.44 MB tool RSS (6.59×) at identical byte/message reduction and matching event-sequence hashes, with no throttling. Wall power was indistinguishable between the two systems (3.610 ± 0.005 W vs 3.584 ± 0.014 W), so no energy advantage is claimed: the board's ~3.0 W idle floor dominates a 40 events/s workload.
 
 ### Changed
 - Citation updated to reflect the accepted status of the IEEE UIC 2026 short paper.
