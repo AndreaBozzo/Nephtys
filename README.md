@@ -81,7 +81,20 @@ From the peer-reviewed evaluation for the [UIC 2026 paper](#citation): Nephtys a
 | CPU (100% = 1 logical core) | **0.03 ± 0.02%** | 0.31 ± 0.08% |
 | Bandwidth reduction (bytes / messages) | 67.3% / 98.7% | 67.3% / 98.7% |
 
-Both systems achieved identical filtering results; end-to-end p95 latency was equivalent (batch-window dominated). Scope: single node, one workload profile — full protocol, raw counters, and scripts in the [companion repository](https://github.com/AndreaBozzo/uic2026-nephtys/).
+Both systems achieved identical filtering results; end-to-end p95 latency was equivalent (batch-window dominated).
+
+The same protocol repeated on **real edge hardware** — a Raspberry Pi 5 (4 GB), both tools native — reproduced this, with the gap widening as Node-RED costs 17% more resident memory on ARM64 while Nephtys is essentially unchanged:
+
+| Metric (mean ± SD, 3 trials, Raspberry Pi 5) | Nephtys | Node-RED 5.0.1 |
+|---|---|---|
+| Tool RSS | **19.5 ± 0.1 MB** | 128.5 ± 0.4 MB |
+| Tool + NATS RSS | **38.9 ± 0.1 MB** | 147.1 ± 0.5 MB |
+| CPU (100% = 1 logical core) | **0.32 ± 0.00%** | 0.72 ± 0.01% |
+| Wall power (whole board, at the socket) | 3.610 ± 0.005 W | 3.584 ± 0.014 W |
+
+Every slot produced the same event-sequence hash and the same 67.3% / 98.7% reduction as on x86-64, and the SoC never throttled. **Note the negative result:** wall power is *indistinguishable* — Nephtys measured 0.7% higher, below the meter's resolution. The Pi's ~3.0 W idle floor dominates at 40 events/s, so the small footprint buys **memory headroom for co-located workloads, not lower power**. Anyone sizing an edge deployment on energy grounds should measure at their own load.
+
+Scope: single node, one workload profile per platform — full protocol, raw counters, recorded deviations, and scripts in the [companion repository](https://github.com/AndreaBozzo/uic2026-nephtys/), summarized in [`docs/benchmarks/`](docs/benchmarks/).
 
 ## Architecture
 
