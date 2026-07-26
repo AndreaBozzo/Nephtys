@@ -65,7 +65,7 @@ say "--- generator-side effective throughput ---"
 curl -s -m 5 "${GEN}/stats" >&2
 
 say "--- Nephtys metrics + stream state ---"
-ssh "$PI" "curl -s -H 'Authorization: Bearer ${TOKEN}' localhost:3002/v1/streams; echo; curl -s localhost:3002/metrics | grep -E '^(bytes_ingested_total|bytes_published_total|event_processing_duration_seconds_count|event_processing_duration_seconds_sum)' | head -12; echo; echo \"CPU temp: \$(vcgencmd measure_temp)  throttled: \$(vcgencmd get_throttled)\"" >&2
+ssh "$PI" "curl -s -H 'Authorization: Bearer ${TOKEN}' localhost:3002/v1/streams; echo; curl -s localhost:3002/metrics | grep -E '^(nephtys_bytes_ingested_total|nephtys_bytes_published_total|nephtys_event_processing_duration_seconds_count|nephtys_event_processing_duration_seconds_sum)' | head -12; echo; echo \"CPU temp: \$(vcgencmd measure_temp)  throttled: \$(vcgencmd get_throttled)\"" >&2
 
 # --- 5) cleanup ------------------------------------------------------------
 say "deleting stream '${STREAM_ID}'"
