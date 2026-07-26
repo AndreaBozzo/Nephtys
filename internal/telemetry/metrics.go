@@ -95,3 +95,30 @@ func DeleteStreamState(streamID string) {
 		StreamState.DeleteLabelValues(streamID, state)
 	}
 }
+
+// DeleteDedupSeries removes the dedup gauges and counter for a stream. Called
+// when a pipeline is built without dedup, so a stream that had the middleware
+// removed stops reporting a frozen cache size and capacity that no longer
+// describe anything running.
+func DeleteDedupSeries(streamID string) {
+	DedupCacheSize.DeleteLabelValues(streamID)
+	DedupCacheCapacity.DeleteLabelValues(streamID)
+	DedupCacheEvictions.DeleteLabelValues(streamID)
+}
+
+// DeleteStreamSeries removes every per-stream series for an unregistered
+// stream. Without it a deleted stream leaves its counters and gauges behind
+// for the lifetime of the process: cardinality grows with every registration,
+// and dashboards keep charting a stream that no longer exists. The dropped
+// counter is label-partitioned by middleware, so it is cleared by matching on
+// stream_id rather than by enumerating middleware names.
+func DeleteStreamSeries(streamID string) {
+	DeleteStreamState(streamID)
+	DeleteDedupSeries(streamID)
+	EventsIngested.DeleteLabelValues(streamID)
+	EventsPublished.DeleteLabelValues(streamID)
+	BytesIngested.DeleteLabelValues(streamID)
+	BytesPublished.DeleteLabelValues(streamID)
+	EventProcessingDuration.DeleteLabelValues(streamID)
+	EventsDropped.DeletePartialMatch(prometheus.Labels{"stream_id": streamID})
+}

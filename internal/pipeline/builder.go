@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"nephtys/internal/domain"
+	"nephtys/internal/telemetry"
 )
 
 // BuildFromConfig creates a pipeline populated with middlewares
@@ -26,9 +27,14 @@ func BuildFromConfig(ctx context.Context, streamID string, cfg *domain.PipelineC
 		middlewares = append(middlewares, transform)
 	}
 
-	// 3. Dedup events before enrichment
+	// 3. Dedup events before enrichment. NewDedup publishes the cache gauges
+	// when it builds; when it does not build, clear any series left by a
+	// previous pipeline so a hot-swap that drops dedup stops reporting stale
+	// occupancy and capacity.
 	if dedup := NewDedup(streamID, cfg.Dedup); dedup != nil {
 		middlewares = append(middlewares, dedup)
+	} else {
+		telemetry.DeleteDedupSeries(streamID)
 	}
 
 	// 4. Enrich remaining events

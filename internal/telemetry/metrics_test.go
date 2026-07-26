@@ -117,6 +117,87 @@ func TestExposedMetricNames(t *testing.T) {
 	}
 }
 
+// seriesForStream returns every gathered series carrying the given stream_id,
+// as "metric_name{extra_label=value}" strings.
+func seriesForStream(t *testing.T, streamID string) []string {
+	t.Helper()
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+
+	var found []string
+	for _, f := range families {
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "stream_id" && l.GetValue() == streamID {
+					found = append(found, f.GetName())
+				}
+			}
+		}
+	}
+	sort.Strings(found)
+	return found
+}
+
+// TestDeleteStreamSeriesRemovesEverything guards against unregistered streams
+// leaving series behind: every registration would otherwise add permanent
+// cardinality, and dashboards would keep charting a stream that is gone.
+func TestDeleteStreamSeries(t *testing.T) {
+	streamID := "metrics-test-delete-all"
+
+	EventsIngested.WithLabelValues(streamID).Inc()
+	EventsPublished.WithLabelValues(streamID).Inc()
+	BytesIngested.WithLabelValues(streamID).Add(1)
+	BytesPublished.WithLabelValues(streamID).Add(1)
+	EventProcessingDuration.WithLabelValues(streamID).Observe(0.001)
+	DedupCacheSize.WithLabelValues(streamID).Set(1)
+	DedupCacheCapacity.WithLabelValues(streamID).Set(1000)
+	DedupCacheEvictions.WithLabelValues(streamID).Inc()
+	SetStreamState(streamID, "connected")
+	// Two middleware label values, to prove the drop counter is cleared across
+	// all of them rather than one well-known name.
+	EventsDropped.WithLabelValues(streamID, "filter").Inc()
+	EventsDropped.WithLabelValues(streamID, "dedup").Inc()
+
+	if got := seriesForStream(t, streamID); len(got) == 0 {
+		t.Fatal("no series materialized, test would pass vacuously")
+	}
+
+	DeleteStreamSeries(streamID)
+
+	if got := seriesForStream(t, streamID); len(got) != 0 {
+		t.Errorf("series left behind after DeleteStreamSeries: %v", got)
+	}
+}
+
+// TestDeleteDedupSeries covers the narrower case of dedup being removed from a
+// running stream's pipeline: the cache gauges must not keep reporting an
+// occupancy and capacity that no longer describe anything.
+func TestDeleteDedupSeries(t *testing.T) {
+	streamID := "metrics-test-delete-dedup"
+	t.Cleanup(func() { DeleteStreamSeries(streamID) })
+
+	EventsIngested.WithLabelValues(streamID).Inc()
+	DedupCacheSize.WithLabelValues(streamID).Set(5)
+	DedupCacheCapacity.WithLabelValues(streamID).Set(50)
+	DedupCacheEvictions.WithLabelValues(streamID).Inc()
+
+	DeleteDedupSeries(streamID)
+
+	got := seriesForStream(t, streamID)
+	for _, name := range got {
+		if strings.Contains(name, "dedup") {
+			t.Errorf("dedup series survived DeleteDedupSeries: %v", got)
+		}
+	}
+	// The stream is still registered, so its other series must be untouched.
+	if len(got) != 1 || got[0] != "nephtys_events_ingested_total" {
+		t.Errorf("non-dedup series should be untouched, got %v", got)
+	}
+}
+
 func TestEventsIngestedCounter(t *testing.T) {
 	// Use a unique label to avoid interference from other tests
 	label := "metrics-test-ingested"
