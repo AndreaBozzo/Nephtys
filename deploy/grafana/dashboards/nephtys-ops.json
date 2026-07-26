@@ -1,0 +1,504 @@
+{
+  "uid": "nephtys-ops",
+  "title": "Nephtys — Operations",
+  "description": "Operator view of a Nephtys instance: stream health, ingest/publish throughput, pipeline drops, processing latency and dedup cache pressure. Hand-authored and committed; edits in the UI are not persisted.",
+  "tags": ["nephtys", "ops"],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "nephtys-prometheus"
+        },
+        "definition": "label_values(nephtys_stream_state, instance)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(nephtys_stream_state, instance)",
+          "refId": "instance"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": ["All"],
+          "value": ["$__all"]
+        }
+      },
+      {
+        "name": "stream_id",
+        "label": "Stream",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "nephtys-prometheus"
+        },
+        "definition": "label_values(nephtys_stream_state{instance=~\"$instance\"}, stream_id)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(nephtys_stream_state{instance=~\"$instance\"}, stream_id)",
+          "refId": "stream_id"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": ["All"],
+          "value": ["$__all"]
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Registered streams",
+      "description": "Streams Nephtys currently knows about. Every registered stream publishes a full one-hot state series, so counting one state counts the streams.",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "expr": "count(nephtys_stream_state{instance=~\"$instance\", stream_id=~\"$stream_id\", state=\"connected\"})"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "noValue": "0"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Connected",
+      "description": "Streams whose source is currently connected. Anything below the registered count is a stream reconnecting, errored or stopped.",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "expr": "sum(nephtys_stream_state{instance=~\"$instance\", stream_id=~\"$stream_id\", state=\"connected\"})"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Ingested",
+      "description": "Events entering the pipeline, across the selected streams.",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "expr": "sum(rate(nephtys_events_ingested_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "decimals": 1, "noValue": "0" },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Published",
+      "description": "Events reaching NATS JetStream. Lower than ingested by whatever the pipeline drops.",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "expr": "sum(rate(nephtys_events_published_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "decimals": 1, "noValue": "0" },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Dropped",
+      "description": "Events discarded by pipeline middleware. A steady rate is normal for filter and dedup stages; see the breakdown panel for which stage is responsible.",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "expr": "sum(rate(nephtys_events_dropped_by_pipeline_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "decimals": 1, "noValue": "0" },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "p99 latency",
+      "description": "99th percentile wall-clock time from ingestion to the NATS publish call returning.",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(nephtys_event_processing_duration_seconds_bucket{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval])))"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "decimals": 4, "noValue": "—" },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "state-timeline",
+      "title": "Stream state",
+      "description": "Per-stream operational state over time. nephtys_stream_state is a one-hot gauge; the four states are folded into a single ordinal (connected=1, reconnecting=2, errored=3, stopped=4) so each stream renders as one row.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{stream_id}}",
+          "expr": "  max by (instance, stream_id) (nephtys_stream_state{instance=~\"$instance\", stream_id=~\"$stream_id\", state=\"connected\"}) * 1\n+ max by (instance, stream_id) (nephtys_stream_state{instance=~\"$instance\", stream_id=~\"$stream_id\", state=\"reconnecting\"}) * 2\n+ max by (instance, stream_id) (nephtys_stream_state{instance=~\"$instance\", stream_id=~\"$stream_id\", state=\"errored\"}) * 3\n+ max by (instance, stream_id) (nephtys_stream_state{instance=~\"$instance\", stream_id=~\"$stream_id\", state=\"stopped\"}) * 4"
+        }
+      ],
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "left",
+        "rowHeight": 0.9,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] },
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "Connected", "color": "green", "index": 0 } } },
+            { "type": "value", "options": { "2": { "text": "Reconnecting", "color": "orange", "index": 1 } } },
+            { "type": "value", "options": { "3": { "text": "Errored", "color": "red", "index": 2 } } },
+            { "type": "value", "options": { "4": { "text": "Stopped", "color": "text", "index": 3 } } }
+          ],
+          "custom": { "fillOpacity": 80, "lineWidth": 0 }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Event rate — ingested vs published",
+      "description": "Per-stream throughput either side of the pipeline. A persistent gap is the pipeline dropping events, not a fault.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{stream_id}} in",
+          "expr": "sum by (stream_id) (rate(nephtys_events_ingested_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "legendFormat": "{{stream_id}} out",
+          "expr": "sum by (stream_id) (rate(nephtys_events_published_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".* out" },
+            "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }]
+          }
+        ]
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Byte rate — ingested vs published",
+      "description": "Payload bytes either side of the pipeline. Divergence from the event-rate panel means transform or batch middleware is reshaping payload size.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 11 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{stream_id}} in",
+          "expr": "sum by (stream_id) (rate(nephtys_bytes_ingested_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "legendFormat": "{{stream_id}} out",
+          "expr": "sum by (stream_id) (rate(nephtys_bytes_published_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".* out" },
+            "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }]
+          }
+        ]
+      }
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Drops by middleware",
+      "description": "Which pipeline stage is discarding events: filter, dedup, threshold. Empty is the expected state for a stream configured with no dropping middleware.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{middleware}}",
+          "expr": "sum by (middleware) (rate(nephtys_events_dropped_by_pipeline_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 25, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Processing latency",
+      "description": "Quantiles of nephtys_event_processing_duration_seconds: ingestion to NATS publish completion. Buckets top out at 5s, so a p99 pinned at 5s means the tail is off-scale.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "p50",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(nephtys_event_processing_duration_seconds_bucket{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval])))"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "legendFormat": "p95",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(nephtys_event_processing_duration_seconds_bucket{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval])))"
+        },
+        {
+          "refId": "C",
+          "editorMode": "code",
+          "legendFormat": "p99",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(nephtys_event_processing_duration_seconds_bucket{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval])))"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Dedup cache saturation",
+      "description": "Entries held versus the stream's configured cache_size. Sustained saturation near 100% means the dedup window is effectively shorter than the configured TTL — raise cache_size.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{stream_id}}",
+          "expr": "100 * nephtys_dedup_cache_size{instance=~\"$instance\", stream_id=~\"$stream_id\"}\n  / nephtys_dedup_cache_capacity{instance=~\"$instance\", stream_id=~\"$stream_id\"}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 80 },
+              { "color": "red", "value": 95 }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "thresholdsStyle": { "mode": "dashed" }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Dedup evictions",
+      "description": "Entries evicted because the LRU was full, excluding TTL expiry. A non-zero rate means unique payloads are arriving faster than cache_size can hold for the configured TTL, so duplicates outside the shortened window will slip through.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "nephtys-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{stream_id}}",
+          "expr": "sum by (stream_id) (rate(nephtys_dedup_cache_evictions_total{instance=~\"$instance\", stream_id=~\"$stream_id\"}[$__rate_interval]))"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

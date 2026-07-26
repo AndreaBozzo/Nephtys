@@ -1,0 +1,17 @@
+apiVersion: 1
+
+# Provisioned datasource for the local compose stack. The uid is pinned so the
+# committed dashboard can reference it by a stable identifier rather than
+# whatever uid a hand-import happens to generate.
+datasources:
+  - name: Prometheus
+    uid: nephtys-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Matches scrape_interval in prometheus.yml, so $__rate_interval resolves
+      # to a window that actually contains samples.
+      timeInterval: 5s

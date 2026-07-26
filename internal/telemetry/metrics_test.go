@@ -56,6 +56,7 @@ func TestExposedMetricNames(t *testing.T) {
 	want := []string{
 		"nephtys_bytes_ingested_total",
 		"nephtys_bytes_published_total",
+		"nephtys_dedup_cache_capacity",
 		"nephtys_dedup_cache_evictions_total",
 		"nephtys_dedup_cache_size",
 		"nephtys_event_processing_duration_seconds",
@@ -76,6 +77,7 @@ func TestExposedMetricNames(t *testing.T) {
 	EventsPublished.WithLabelValues(streamID).Inc()
 	EventProcessingDuration.WithLabelValues(streamID).Observe(0.001)
 	DedupCacheSize.WithLabelValues(streamID).Set(1)
+	DedupCacheCapacity.WithLabelValues(streamID).Set(1000)
 	DedupCacheEvictions.WithLabelValues(streamID).Inc()
 	SetStreamState(streamID, "connected")
 

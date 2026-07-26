@@ -58,6 +58,15 @@ var (
 		Help: "Current number of entries in each stream's dedup LRU.",
 	}, []string{"stream_id"})
 
+	// DedupCacheCapacity reports the configured LRU capacity for each stream's
+	// dedup middleware (cfg.CacheSize, or the 1000 default). Exposing it as a
+	// gauge lets a dashboard plot saturation as size/capacity without knowing
+	// the stream config; it is set once when the middleware is built.
+	DedupCacheCapacity = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "nephtys_dedup_cache_capacity",
+		Help: "Configured maximum number of entries in each stream's dedup LRU.",
+	}, []string{"stream_id"})
+
 	// DedupCacheEvictions counts LRU evictions caused by a full cache
 	// (excludes TTL-expired entries replaced in-place). A growing rate
 	// indicates the dedup cache is undersized for the unique-payload rate.

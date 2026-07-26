@@ -2,9 +2,20 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
+  # Nephtys can be run either way against this stack, so both targets are listed
+  # and whichever one is not in use simply reports down:
+  #
+  #   nephtys:3002              the optional in-compose service
+  #                             (docker compose --profile nephtys up -d)
+  #   host.docker.internal:3002 a binary run on the host (make run), reachable
+  #                             on Linux too via the host-gateway alias the
+  #                             prometheus service declares in compose.yml
+  #
+  # The committed Grafana dashboard has an "Instance" variable, so it works
+  # unchanged in either mode and keeps the two apart if both happen to be up.
   - job_name: 'nephtys'
     metrics_path: '/metrics'
     static_configs:
-      - targets: ['host.docker.internal:3002']
-    # NOTE: On Linux without Docker Desktop, replace host.docker.internal
-    # with the host's actual IP or run Nephtys inside the compose network.
+      - targets:
+          - 'nephtys:3002'
+          - 'host.docker.internal:3002'
