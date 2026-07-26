@@ -19,8 +19,11 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# The -X value is quoted inside the ldflags string because `go` re-splits that
+# string on whitespace before handing it to the linker: an unquoted VERSION
+# containing a space would send its tail to the linker as a bogus flag.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /nephtys ./cmd/nephtys
+    go build -trimpath -ldflags="-s -w -X 'main.version=${VERSION}'" -o /nephtys ./cmd/nephtys
 
 # ---------- Runtime ----------
 # The :nonroot variant runs as uid 65532 rather than root. Nephtys binds :3002,
