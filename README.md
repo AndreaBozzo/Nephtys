@@ -303,6 +303,7 @@ make build      # Build the binary
 make test       # Run the test suite
 make fmt        # Format the code (gofmt)
 make vet        # Run go vet
+make check-examples # Validate every docs/examples/*.json with --config-check
 make all        # Run fmt + vet + test (the standard pre-commit cycle)
 ```
 
