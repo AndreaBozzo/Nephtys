@@ -114,10 +114,22 @@ func runConfigCheck(path string) error {
 	return nil
 }
 
-func runService() error {
-	slog.Info("Starting Nephtys Edge Connector", "version", resolveVersion())
+// configureLogging installs the process-wide slog handler at the requested
+// level. An unrecognized level is not fatal: the process starts at info and
+// says so once, since a typo in an env var is a poor reason to refuse to run.
+func configureLogging(level string) {
+	parsed, err := config.ParseLogLevel(level)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parsed})))
+	if err != nil {
+		slog.Warn("Falling back to info logging", "error", err)
+	}
+}
 
+func runService() error {
 	cfg := config.Load()
+	configureLogging(cfg.LogLevel)
+
+	slog.Info("Starting Nephtys Edge Connector", "version", resolveVersion())
 
 	brk, err := broker.Connect(cfg.NatsURL, broker.DefaultConfig())
 	if err != nil {

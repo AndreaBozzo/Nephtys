@@ -18,9 +18,11 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 - Definitive Raspberry Pi 5 edge comparison against Node-RED 5.0.1 in `docs/benchmarks/`: 19.51 ± 0.07 MB vs 128.47 ± 0.44 MB tool RSS (6.59×) at identical byte/message reduction and matching event-sequence hashes, with no throttling. Wall power was indistinguishable between the two systems (3.610 ± 0.005 W vs 3.584 ± 0.014 W), so no energy advantage is claimed: the board's ~3.0 W idle floor dominates a 40 events/s workload.
 
 ### Changed
+- Logs are now emitted through an explicit `slog` text handler on stderr, so records carry `time=`/`level=`/`msg=` keys instead of the Go standard-logger prefix. Field names and destination are otherwise unchanged. (#38)
 - Citation updated to reflect the accepted status of the IEEE UIC 2026 short paper.
 
 ### Fixed
+- `NEPHTYS_LOG_LEVEL` now actually controls logging verbosity. It was documented in the README and `.env.example` and loaded into the runtime config, but never applied, so the process always ran at `info` and `debug` was silently a no-op. Unrecognized values fall back to `info` with a single warning naming the offending value rather than failing startup. (#38)
 - Compose `nats` service now uses the `nats:alpine` image so its `wget`-based healthcheck actually runs; the default distroless image has no `wget` or shell, leaving the container perpetually `unhealthy` despite a working server.
 
 ### Security

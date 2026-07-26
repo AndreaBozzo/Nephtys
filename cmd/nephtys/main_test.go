@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,5 +211,95 @@ func TestRunConfigCheck_StdinTooLarge(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds") {
 		t.Errorf("error %q does not mention size limit", err.Error())
+	}
+}
+
+// withDefaultLogger restores the process-wide slog default after a test that
+// calls configureLogging, which necessarily mutates global state.
+func withDefaultLogger(t *testing.T) {
+	t.Helper()
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+}
+
+func TestConfigureLogging_AppliesLevel(t *testing.T) {
+	tests := []struct {
+		level    string
+		enabled  []slog.Level
+		disabled []slog.Level
+	}{
+		{"debug", []slog.Level{slog.LevelDebug, slog.LevelInfo}, nil},
+		{"info", []slog.Level{slog.LevelInfo}, []slog.Level{slog.LevelDebug}},
+		{"warn", []slog.Level{slog.LevelWarn}, []slog.Level{slog.LevelInfo, slog.LevelDebug}},
+		{"error", []slog.Level{slog.LevelError}, []slog.Level{slog.LevelWarn, slog.LevelInfo}},
+		// Unrecognized values must not disable logging altogether.
+		{"verbose", []slog.Level{slog.LevelInfo}, []slog.Level{slog.LevelDebug}},
+	}
+
+	for _, tt := range tests {
+		withDefaultLogger(t)
+		configureLogging(tt.level)
+
+		for _, lvl := range tt.enabled {
+			if !slog.Default().Enabled(context.Background(), lvl) {
+				t.Errorf("configureLogging(%q): %v should be enabled", tt.level, lvl)
+			}
+		}
+		for _, lvl := range tt.disabled {
+			if slog.Default().Enabled(context.Background(), lvl) {
+				t.Errorf("configureLogging(%q): %v should be suppressed", tt.level, lvl)
+			}
+		}
+	}
+}
+
+// The fallback path must say why it fell back, and name the bad value — a
+// silent downgrade to info is how a mistyped env var goes unnoticed for weeks.
+func TestConfigureLogging_InvalidWarnsOnce(t *testing.T) {
+	withDefaultLogger(t)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	configureLogging("verbose")
+	os.Stderr = origStderr
+	_ = w.Close()
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+
+	got := string(out)
+	if !strings.Contains(got, "verbose") {
+		t.Errorf("warning %q does not name the offending value", got)
+	}
+	if n := strings.Count(got, "Falling back"); n != 1 {
+		t.Errorf("got %d fallback warnings, want exactly 1: %q", n, got)
+	}
+}
+
+func TestConfigureLogging_ValidIsSilent(t *testing.T) {
+	withDefaultLogger(t)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	configureLogging("debug")
+	os.Stderr = origStderr
+	_ = w.Close()
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("configureLogging(\"debug\") wrote %q, want no output", out)
 	}
 }
