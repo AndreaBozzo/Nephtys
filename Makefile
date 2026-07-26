@@ -7,7 +7,7 @@ export
 BINARY := nephtys
 CMD := ./cmd/nephtys
 
-.PHONY: help build run test coverage fmt vet lint clean check-examples docker-up docker-down all
+.PHONY: help build run test coverage fmt vet lint clean check-examples docker-up docker-down docker-build all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'

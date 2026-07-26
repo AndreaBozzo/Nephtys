@@ -298,13 +298,13 @@ Nephtys uses NATS JetStream for both event durability and configuration state â€
 ## Development
 
 ```bash
-make help       # List available targets
-make build      # Build the binary
-make test       # Run the test suite
-make fmt        # Format the code (gofmt)
-make vet        # Run go vet
-make check-examples # Validate every docs/examples/*.json with --config-check
-make all        # Run fmt + vet + test (the standard pre-commit cycle)
+make help            # List available targets
+make build           # Build the binary
+make test            # Run the test suite
+make fmt             # Format the code (gofmt)
+make vet             # Run go vet
+make check-examples  # Validate every docs/examples/*.json with --config-check
+make all             # Run fmt + vet + test (the standard pre-commit cycle)
 ```
 
 ### Docker Management
