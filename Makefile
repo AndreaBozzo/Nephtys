@@ -11,7 +11,7 @@ CMD := ./cmd/nephtys
 #   make docker-build VERSION=v0.3.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: help build run test coverage fmt vet lint clean check-examples docker-up docker-down docker-build all
+.PHONY: help build run test coverage fmt vet lint clean check-examples docker-up docker-up-full docker-down docker-build all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -60,11 +60,14 @@ clean: ## Remove build artifacts
 	rm -f $(BINARY)
 	go clean
 
-docker-up: ## Start NATS with docker compose
+docker-up: ## Start NATS, Prometheus and a provisioned Grafana (run Nephtys on the host)
 	docker compose up -d
 
-docker-down: ## Stop NATS
-	docker compose down
+docker-up-full: ## Same, plus Nephtys itself from the published GHCR image
+	docker compose --profile nephtys up -d
+
+docker-down: ## Stop the compose stack
+	docker compose --profile nephtys down
 
 docker-build: ## Build the production Docker image (override VERSION=v0.3.0)
 	docker build --build-arg VERSION="$(VERSION)" -t $(BINARY):latest .

@@ -166,7 +166,7 @@ docker run --rm ghcr.io/andreabozzo/nephtys:edge --version
 git clone https://github.com/AndreaBozzo/Nephtys.git
 cd Nephtys
 
-# Start NATS with JetStream
+# Start NATS with JetStream, Prometheus, and a pre-provisioned Grafana
 docker compose up -d
 
 # Configure environment
@@ -275,6 +275,40 @@ Control the global behavior of the instance via environment variables.
 
 Each `GET /v1/streams` item includes `status`, derived `health` (`healthy`, `degraded`, or `errored`), and `last_message_at` once the source has emitted an event. Prometheus exposes the same connector state as the one-hot `nephtys_stream_state{stream_id,state}` gauge.
 
+### Metrics and the operations dashboard
+
+`GET /metrics` serves Prometheus text format. Every Nephtys series carries the `nephtys_` prefix; `go_*`, `process_*` and `promhttp_*` are the standard collectors.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `nephtys_stream_state` | gauge (one-hot) | `stream_id`, `state` |
+| `nephtys_events_ingested_total` | counter | `stream_id` |
+| `nephtys_events_published_total` | counter | `stream_id` |
+| `nephtys_events_dropped_by_pipeline_total` | counter | `stream_id`, `middleware` |
+| `nephtys_bytes_ingested_total` | counter | `stream_id` |
+| `nephtys_bytes_published_total` | counter | `stream_id` |
+| `nephtys_event_processing_duration_seconds` | histogram | `stream_id` |
+| `nephtys_dedup_cache_size` | gauge | `stream_id` |
+| `nephtys_dedup_cache_capacity` | gauge | `stream_id` |
+| `nephtys_dedup_cache_evictions_total` | counter | `stream_id` |
+
+`docker compose up -d` brings up NATS, Prometheus and a Grafana that is **already provisioned** — the datasource and the *Nephtys — Operations* dashboard are mounted from [`deploy/grafana/`](deploy/grafana/), so there is nothing to import by hand:
+
+| Service | URL | Notes |
+|---|---|---|
+| Grafana | <http://localhost:3000/d/nephtys-ops> | login `admin` / `admin` |
+| Prometheus | <http://localhost:9090> | scrapes Nephtys every 5s |
+
+The dashboard shows per-stream state, ingest/publish event and byte rates, drops broken down by middleware, processing-latency quantiles, and dedup cache saturation against configured capacity. Its `Instance` and `Stream` variables scope every panel.
+
+Prometheus scrapes two targets — `host.docker.internal:3002` for a binary run with `make run`, and `nephtys:3002` for the optional in-compose service — so whichever way you run Nephtys, one target is up and the other reports down. To run Nephtys inside the stack from the published image instead of on the host:
+
+```bash
+make docker-up-full     # docker compose --profile nephtys up -d
+```
+
+The dashboard JSON is committed and reviewed as source, so Grafana is configured not to persist UI edits: use "Save As" to experiment, and change [`nephtys-ops.json`](deploy/grafana/dashboards/nephtys-ops.json) to make a change stick.
+
 ### CLI flags
 
 ```bash
@@ -299,7 +333,7 @@ cat config.json | nephtys --config-check -          # same, from stdin (useful i
 
 Pipelines are declared inline on stream registration as JSON. Each middleware is optional; they run in a fixed order (filter → transform → dedup → enrich → threshold → batch) before the event is published.
 
-- **Filter** — drops events whose `type` doesn't match `match_types`.
+- **Filter** — drops events whose `type` doesn't match `match_types`. `type` is the envelope field the connector sets, not a field inside the payload: SSE uses the `event:` frame name, WebSocket infers it from a top-level `e` key, and everything else falls back to a per-connector default. A `match_types` listing values that only ever appear inside the payload matches nothing and drops the whole stream.
 - **Transform** — remaps fields in the JSON payload using dot-notation paths.
 - **Dedup** — short-window LRU deduplication on FNV-1a hashes of the event body. Per-stream and in-memory; state is not shared across instances and does not survive restart. Bounded by `cache_size` (default 1000). `ttl` (default `1m`) is enforced lazily: an entry is fresh until the TTL has elapsed since it was last seen, and treated as expired only when its hash is checked again past that window — stale entries that are never re-seen remain in the LRU until evicted by capacity. Size `cache_size` for at least one full TTL window of expected unique payloads.
 - **Enrich** — adds static tags to outgoing events.

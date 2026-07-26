@@ -35,7 +35,7 @@ If `NEPHTYS_ADMIN_TOKEN` is unset, omit the `Authorization` header (auth is disa
 ## Notes on the public endpoints
 
 - **Open-Meteo** is a free weather API and does not require an API key. The example polls a fixed coordinate (Bologna, Italy) every 60 seconds.
-- **Wikimedia EventStreams** is a free public SSE endpoint emitting MediaWiki events. It can be high-volume — use the `dedup` or `filter` middleware in production.
+- **Wikimedia EventStreams** is a free public SSE endpoint emitting MediaWiki events. It can be high-volume — use the `dedup` or `batch` middleware in production. Note that `filter.match_types` matches the *connector-level* event type, not a field inside the payload: for SSE that is the `event:` frame name, which Wikimedia sets to `message` on every frame. Filtering this feed on the payload's own `type` values (`edit`, `new`, …) matches nothing and silently drops the entire stream.
 - **Binance** is included as the trading-side reference. No API key is required for the public trade stream.
 - **Coinbase Exchange** requires a subscribe message after connecting — the example uses `on_connect_send` for it. No API key is required for the public ticker channel.
 - **IoT gateway** (`sensor_websocket_subscribe.json`) points at a placeholder host (`gateway.example.com`); swap in your gateway's URL, auth token, and channel names. It passes `--config-check` as-is but is not runnable without a real endpoint.

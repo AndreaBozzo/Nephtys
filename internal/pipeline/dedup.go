@@ -44,6 +44,7 @@ func NewDedup(streamID string, cfg *domain.DedupConfig) Middleware {
 	if cacheSize <= 0 {
 		cacheSize = 1000
 	}
+	telemetry.DedupCacheCapacity.WithLabelValues(streamID).Set(float64(cacheSize))
 
 	// LRU cache components
 	type entry struct {
