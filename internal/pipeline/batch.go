@@ -79,16 +79,13 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 			// batch before flushing. Events already accepted by the handler
 			// were reported to the source as published; discarding them on
 			// shutdown or a pipeline hot-swap would be silent data loss.
+			//
+			// eventCh is created and written only within this closure and is
+			// never closed, so the receive below cannot yield a zero value.
 			drainAndFlush := func() {
 				for {
 					select {
-					case te, ok := <-eventCh:
-						// A closed channel is always ready; without this guard
-						// the loop would append zero-value events forever.
-						if !ok {
-							flush()
-							return
-						}
+					case te := <-eventCh:
 						batch = append(batch, te.event)
 						lastTopic = te.topic
 						if len(batch) >= maxSize {
@@ -106,11 +103,7 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 				case <-ctx.Done():
 					drainAndFlush()
 					return
-				case te, ok := <-eventCh:
-					if !ok {
-						drainAndFlush()
-						return // Channel closed, terminate worker
-					}
+				case te := <-eventCh:
 					batch = append(batch, te.event)
 					lastTopic = te.topic
 					if len(batch) >= maxSize {
@@ -131,12 +124,21 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 			// pass it straight through instead. The cost is that binary events
 			// may overtake JSON events still sitting in the buffer on a stream
 			// that mixes both — preferable to losing them.
+			//
+			// This deliberately runs before the cancellation check below. That
+			// check exists to avoid handing an event to a worker that has
+			// already drained and exited; a binary event never touches the
+			// worker, so refusing it after cancellation would drop data for no
+			// benefit. Downstream handlers do not observe the pipeline context.
 			if event.IsBinary() {
 				return next(topic, event)
 			}
 
 			// Prefer reporting a closed pipeline over handing an event to a
-			// channel whose worker has already drained and exited.
+			// channel whose worker has already drained and exited. The select
+			// below still needs its own ctx.Done case for the narrower race
+			// where cancellation lands while this send is blocked on a full
+			// buffer.
 			if err := ctx.Err(); err != nil {
 				return err
 			}

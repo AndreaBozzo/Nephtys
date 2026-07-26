@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,5 +201,159 @@ func TestBatchMiddleware_RejectsAfterCancel(t *testing.T) {
 	err := handler("topic", domain.StreamEvent{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("handler after cancel returned %v, want context.Canceled", err)
+	}
+}
+
+// A payload that is not valid JSON makes marshalling the batch array fail.
+// json.RawMessage passes its bytes through verbatim, so the failure surfaces
+// only at the array level — the batch must be reported rather than published
+// as a malformed event.
+func TestBatchMiddleware_MarshalFailureIsReported(t *testing.T) {
+	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 1, FlushInterval: "1h"}
+	batch := NewBatch(context.Background(), cfg)
+
+	published := make(chan domain.StreamEvent, 1)
+	handler := batch(func(topic string, e domain.StreamEvent) error {
+		published <- e
+		return nil
+	})
+
+	err := handler("topic", domain.StreamEvent{
+		Source:  "test",
+		Type:    "evt",
+		Payload: json.RawMessage(`not json at all`),
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	select {
+	case e := <-published:
+		t.Fatalf("unmarshalable batch was published anyway: %s", e.Payload)
+	case <-time.After(200 * time.Millisecond):
+		// Correct: the batch was dropped and logged, not published.
+	}
+
+	// The worker must survive the failure and keep batching valid events.
+	if err := handler("topic", domain.StreamEvent{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)}); err != nil {
+		t.Fatalf("handler returned error after a failed batch: %v", err)
+	}
+	select {
+	case e := <-published:
+		if string(e.Payload) != `[{"id":1}]` {
+			t.Errorf("payload = %s, want [{\"id\":1}]", e.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker stopped batching after a marshal failure")
+	}
+}
+
+// max_batch_size is a contract, and the final drain must honour it rather than
+// emitting one oversized batch on shutdown.
+func TestBatchMiddleware_DrainRespectsMaxBatchSize(t *testing.T) {
+	const maxSize = 2
+	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: maxSize, FlushInterval: "1h"}
+	ctx, cancel := context.WithCancel(context.Background())
+	batch := NewBatch(ctx, cfg)
+
+	release := make(chan struct{})
+	flushed := make(chan domain.StreamEvent, 4)
+	var once sync.Once
+	handler := batch(func(topic string, e domain.StreamEvent) error {
+		// Block the very first flush so the worker is busy while we fill the
+		// channel buffer behind it, then let everything proceed.
+		once.Do(func() { <-release })
+		flushed <- e
+		return nil
+	})
+
+	send := func(id int) {
+		payload := json.RawMessage(`{"id":` + strconv.Itoa(id) + `}`)
+		if err := handler("topic", domain.StreamEvent{Source: "test", Type: "evt", Payload: payload}); err != nil {
+			t.Errorf("event %d: handler returned error: %v", id, err)
+		}
+	}
+
+	// Fill one batch so the worker enters the blocked flush.
+	send(1)
+	send(2)
+	// These land in the channel buffer while the worker is stuck.
+	send(3)
+	send(4)
+
+	cancel()
+	close(release)
+
+	var total int
+	for total < 4 {
+		select {
+		case e := <-flushed:
+			var payloads []json.RawMessage
+			if err := json.Unmarshal(e.Payload, &payloads); err != nil {
+				t.Fatalf("unmarshal batched payload: %v", err)
+			}
+			if len(payloads) > maxSize {
+				t.Errorf("flushed a batch of %d, exceeding max_batch_size %d", len(payloads), maxSize)
+			}
+			total += len(payloads)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d of 4 events were flushed", total)
+		}
+	}
+}
+
+// An unset or non-positive max_batch_size falls back to the documented default
+// rather than producing a zero-capacity channel.
+func TestBatchMiddleware_DefaultMaxBatchSize(t *testing.T) {
+	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 0, FlushInterval: "50ms"}
+	batch := NewBatch(context.Background(), cfg)
+
+	flushed := make(chan domain.StreamEvent, 1)
+	handler := batch(func(topic string, e domain.StreamEvent) error {
+		flushed <- e
+		return nil
+	})
+
+	// With a zero-capacity channel this send would block forever.
+	if err := handler("topic", domain.StreamEvent{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)}); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	select {
+	case <-flushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("event was never flushed by the interval timer")
+	}
+}
+
+// A downstream publish failure must not wedge the worker: the batch is logged
+// and cleared, and subsequent batches still flow.
+func TestBatchMiddleware_FlushErrorDoesNotStallWorker(t *testing.T) {
+	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 1, FlushInterval: "1h"}
+	batch := NewBatch(context.Background(), cfg)
+
+	seen := make(chan domain.StreamEvent, 2)
+	var calls atomic.Int32
+	handler := batch(func(topic string, e domain.StreamEvent) error {
+		seen <- e
+		if calls.Add(1) == 1 {
+			return errors.New("broker unavailable")
+		}
+		return nil
+	})
+
+	for i := 1; i <= 2; i++ {
+		payload := json.RawMessage(`{"id":` + strconv.Itoa(i) + `}`)
+		if err := handler("topic", domain.StreamEvent{Source: "test", Type: "evt", Payload: payload}); err != nil {
+			t.Fatalf("event %d: handler returned error: %v", i, err)
+		}
+	}
+
+	for i := 1; i <= 2; i++ {
+		select {
+		case <-seen:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("batch %d never reached the sink; worker stalled after the failure", i)
+		}
 	}
 }
