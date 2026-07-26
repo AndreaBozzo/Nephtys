@@ -56,9 +56,12 @@ func NewDedup(streamID string, cfg *domain.DedupConfig) Middleware {
 
 	return func(next Handler) Handler {
 		return func(topic string, event domain.StreamEvent) error {
-			// Calculate FNV-1a hash of the payload
+			// Hash the event body, not Payload: binary events carry their
+			// bytes on Data and leave Payload nil, so hashing Payload alone
+			// collapses every binary event onto the same hash and drops all
+			// but the first as a duplicate.
 			h := fnv.New64a()
-			h.Write(event.Payload)
+			h.Write(event.Body())
 			hash := h.Sum64()
 
 			mu.Lock()

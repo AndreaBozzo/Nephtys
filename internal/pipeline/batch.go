@@ -54,7 +54,12 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 				for i, e := range batch {
 					payloads[i] = e.Payload
 				}
-				arrayPayload, _ := json.Marshal(payloads)
+				arrayPayload, err := json.Marshal(payloads)
+				if err != nil {
+					slog.Error("batch marshal failed, dropping batch", "topic", lastTopic, "size", len(batch), "error", err)
+					batch = batch[:0]
+					return
+				}
 
 				batchedEvent := domain.StreamEvent{
 					Source:    batch[0].Source,
@@ -70,16 +75,35 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 				batch = batch[:0] // Reset batch, keeping allocated capacity
 			}
 
+			// drainAndFlush empties the buffered channel into the current
+			// batch before flushing. Events already accepted by the handler
+			// were reported to the source as published; discarding them on
+			// shutdown or a pipeline hot-swap would be silent data loss.
+			//
+			// eventCh is created and written only within this closure and is
+			// never closed, so the receive below cannot yield a zero value.
+			drainAndFlush := func() {
+				for {
+					select {
+					case te := <-eventCh:
+						batch = append(batch, te.event)
+						lastTopic = te.topic
+						if len(batch) >= maxSize {
+							flush()
+						}
+					default:
+						flush()
+						return
+					}
+				}
+			}
+
 			for {
 				select {
 				case <-ctx.Done():
-					flush()
+					drainAndFlush()
 					return
-				case te, ok := <-eventCh:
-					if !ok {
-						flush()
-						return // Channel closed, terminate worker
-					}
+				case te := <-eventCh:
 					batch = append(batch, te.event)
 					lastTopic = te.topic
 					if len(batch) >= maxSize {
@@ -94,6 +118,31 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 
 		// The returned handler just pushes to the channel
 		return func(topic string, event domain.StreamEvent) error {
+			// Binary events cannot be aggregated: the batch envelope is a JSON
+			// array built from Payload, which is nil for them, and it carries
+			// no ContentType. Batching one would discard its Data entirely, so
+			// pass it straight through instead. The cost is that binary events
+			// may overtake JSON events still sitting in the buffer on a stream
+			// that mixes both — preferable to losing them.
+			//
+			// This deliberately runs before the cancellation check below. That
+			// check exists to avoid handing an event to a worker that has
+			// already drained and exited; a binary event never touches the
+			// worker, so refusing it after cancellation would drop data for no
+			// benefit. Downstream handlers do not observe the pipeline context.
+			if event.IsBinary() {
+				return next(topic, event)
+			}
+
+			// Prefer reporting a closed pipeline over handing an event to a
+			// channel whose worker has already drained and exited. The select
+			// below still needs its own ctx.Done case for the narrower race
+			// where cancellation lands while this send is blocked on a full
+			// buffer.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
 			select {
 			case eventCh <- topicEvent{topic: topic, event: event}:
 				return nil
