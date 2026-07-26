@@ -64,11 +64,25 @@ func TestExposedMetricNames(t *testing.T) {
 		"nephtys_events_published_total",
 		"nephtys_stream_state",
 	}
+	// Compared as a sorted list, so the literal above does not double as an
+	// ordering constraint on whoever adds the next metric.
+	sort.Strings(want)
 
 	// A *Vec reports no metric family until it has at least one child, so
-	// materialize one series per metric before gathering.
+	// materialize one series per metric before gathering, and drop them again
+	// afterwards so the default registry is left as this test found it.
 	streamID := "metrics-test-names"
-	t.Cleanup(func() { DeleteStreamState(streamID) })
+	t.Cleanup(func() {
+		EventsIngested.DeleteLabelValues(streamID)
+		EventsDropped.DeleteLabelValues(streamID, "filter")
+		BytesIngested.DeleteLabelValues(streamID)
+		BytesPublished.DeleteLabelValues(streamID)
+		EventsPublished.DeleteLabelValues(streamID)
+		EventProcessingDuration.DeleteLabelValues(streamID)
+		DedupCacheSize.DeleteLabelValues(streamID)
+		DedupCacheEvictions.DeleteLabelValues(streamID)
+		DeleteStreamState(streamID)
+	})
 	EventsIngested.WithLabelValues(streamID).Inc()
 	EventsDropped.WithLabelValues(streamID, "filter").Inc()
 	BytesIngested.WithLabelValues(streamID).Add(1)
