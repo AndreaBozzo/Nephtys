@@ -7,8 +7,7 @@ on:
   pull_request:
     branches: [main]
 
-# Read-only by default. The publish job widens this to packages: write for
-# itself alone, so a pull request build never holds a token that could push.
+# Read-only by default. Only `publish` widens this, and only for itself.
 permissions:
   contents: read
 
@@ -18,13 +17,18 @@ env:
   # reference that `docker pull` rejects in the smoke test below.
   IMAGE: ghcr.io/andreabozzo/nephtys
 
+# `build` and `publish` are mutually exclusive on the event, so nothing is
+# built twice. They are separate jobs rather than one job with conditional
+# steps because `permissions` cannot take an expression: a single job would
+# have to declare packages: write unconditionally, handing that scope to
+# pull-request runs that have no use for it.
 jobs:
-  image:
+  build:
     name: Build image
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
       - uses: actions/checkout@v7
@@ -33,6 +37,34 @@ jobs:
       # Go cross-compiles to $TARGETARCH, while the runtime stage only copies a
       # binary into a distroless base. Nothing is ever executed for the foreign
       # architecture, so there is nothing to emulate.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Proves the Dockerfile still builds for both targets. Nothing is pushed
+      # and no registry credential exists in this job.
+      - name: Build both architectures
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: nephtys:pr-${{ github.event.pull_request.number }}
+          build-args: |
+            VERSION=pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    name: Publish image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -55,10 +87,7 @@ jobs:
             org.opencontainers.image.description=Lightweight real-time stream connector publishing normalized events to NATS JetStream
             org.opencontainers.image.licenses=Apache-2.0
 
-      # Only trusted refs get a registry credential at all. Pull requests skip
-      # this step and the push below, so a fork PR builds but cannot publish.
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -70,7 +99,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # metadata-action derives a clean version from the ref: the tag for a
@@ -81,19 +110,19 @@ jobs:
           cache-to: type=gha,mode=max
 
       # Proves the published image actually runs before anyone pulls it. Only
-      # the native arch is smoke-tested here; the arm64 leg is verified by
-      # inspecting the manifest, since this runner cannot execute arm64.
-      - name: Smoke-test the built image
-        if: github.event_name != 'pull_request'
+      # the native arch is executed here; the arm64 leg is verified by
+      # inspecting the manifest, since this runner cannot run arm64 binaries.
+      - name: Smoke-test the published image
         run: |
-          set -e
+          set -euo pipefail
           tag="${{ env.IMAGE }}:${{ steps.meta.outputs.version }}"
           echo "Pulling $tag"
           docker pull "$tag"
           echo "--- version ---"
           docker run --rm "$tag" --version
           echo "--- manifest architectures ---"
-          docker buildx imagetools inspect "$tag" --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{"\n"}}{{end}}' \
+          docker buildx imagetools inspect "$tag" \
+            --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{"\n"}}{{end}}' \
             | grep -E '^linux/(amd64|arm64)$' | sort -u | tee /tmp/arches
           for want in linux/amd64 linux/arm64; do
             grep -qx "$want" /tmp/arches || { echo "missing $want in manifest" >&2; exit 1; }

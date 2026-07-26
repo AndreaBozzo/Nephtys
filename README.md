@@ -139,8 +139,9 @@ flowchart LR
 No toolchain required — multi-architecture images (`linux/amd64`, `linux/arm64`) are published to GHCR:
 
 ```bash
-# A shared network so Nephtys can resolve NATS by name on every platform
-docker network create nephtys
+# A shared network so Nephtys can resolve NATS by name on every platform.
+# Idempotent, so the block is safe to re-run.
+docker network create nephtys 2>/dev/null || true
 
 docker run -d --name nats --network nephtys -p 4222:4222 \
   nats:alpine --jetstream --store_dir /data
