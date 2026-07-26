@@ -39,6 +39,9 @@ jobs:
     - name: Build
       run: go build -v ./...
 
+    - name: Validate example configs
+      run: make check-examples
+
     - name: Test
       run: go test -v -race -coverprofile=coverage.out ./...
 

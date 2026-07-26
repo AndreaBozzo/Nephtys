@@ -9,6 +9,7 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ## [Unreleased]
 
 ### Added
+- `make check-examples` validates every config in `docs/examples/` with `--config-check`, and CI runs it. The rule that each example must stay loadable was documented but unenforced; the target also fails when the directory matches no JSON at all, so a rename cannot make the check vacuously pass. (#41)
 - Per-stream operational visibility: one-hot `nephtys_stream_state{stream_id,state}` metric plus additive `health` and `last_message_at` fields from `GET /v1/streams`. (#11)
 - Optional `websocket.on_connect_send` field (string or list of strings) on WebSocket stream configs: frames are sent verbatim after every successful handshake, including reconnects. Unlocks sources that require a subscribe/auth frame. Trading-style and sensor-style examples in `docs/examples/`. (#10)
 - Outcome-based roadmap covering the operational core, public proof, stable platform, and focused experiments without calendar commitments.

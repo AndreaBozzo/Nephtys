@@ -7,7 +7,7 @@ export
 BINARY := nephtys
 CMD := ./cmd/nephtys
 
-.PHONY: help build run test coverage fmt vet lint clean docker-up docker-down all
+.PHONY: help build run test coverage fmt vet lint clean check-examples docker-up docker-down docker-build all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -37,6 +37,20 @@ vet: ## Run go vet
 
 lint: ## Run golangci-lint (requires golangci-lint installed locally)
 	golangci-lint run
+
+check-examples: ## Validate every docs/examples/*.json with --config-check
+	@set -e; \
+	count=0; \
+	for f in docs/examples/*.json; do \
+		[ -e "$$f" ] || continue; \
+		go run $(CMD) --config-check "$$f"; \
+		count=$$((count + 1)); \
+	done; \
+	if [ "$$count" -eq 0 ]; then \
+		echo "no example configs found in docs/examples/ — did the directory move?" >&2; \
+		exit 1; \
+	fi; \
+	echo "$$count example config(s) valid"
 
 clean: ## Remove build artifacts
 	rm -f $(BINARY)
