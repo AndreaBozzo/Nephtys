@@ -1,0 +1,39 @@
+# The image build needs go.mod/go.sum, cmd/, internal/, and proto/ — nothing
+# else. Everything below is either large, irrelevant to the build, or a local
+# artifact that would bust the layer cache on every rebuild.
+
+# Version control. The build stamps the version via the VERSION build arg, so
+# the ~11 MB of history here buys nothing.
+.git
+.gitignore
+.github
+
+# Docs, examples, and benchmark data. Not compiled into the binary.
+docs
+*.md
+
+# Local build and test artifacts.
+nephtys
+nephtys.exe
+*.exe
+coverage.out
+coverage.html
+
+# Local configuration and secrets — must never reach a published image.
+.env
+.env.*
+!.env.example
+
+# Editor and tooling state.
+.vscode
+.idea
+.claude
+
+# Compose and CI config used to run the image, not to build it.
+compose.yml
+prometheus.yml
+codecov.yml
+.golangci.yml
+Makefile
+Dockerfile
+.dockerignore
