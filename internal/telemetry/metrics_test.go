@@ -1,8 +1,11 @@
 package telemetry
 
 import (
+	"sort"
+	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -42,6 +45,72 @@ func TestMetricsRegistered(t *testing.T) {
 			// Should not panic
 			tt.inc()
 		})
+	}
+}
+
+// TestExposedMetricNames pins the /metrics surface: every series Nephtys owns
+// carries the nephtys_ prefix, and the set is exactly what we intend to expose.
+// Metric names are a public contract for scrape configs and dashboards, so a
+// rename should have to be deliberate enough to update this list.
+func TestExposedMetricNames(t *testing.T) {
+	want := []string{
+		"nephtys_bytes_ingested_total",
+		"nephtys_bytes_published_total",
+		"nephtys_dedup_cache_evictions_total",
+		"nephtys_dedup_cache_size",
+		"nephtys_event_processing_duration_seconds",
+		"nephtys_events_dropped_by_pipeline_total",
+		"nephtys_events_ingested_total",
+		"nephtys_events_published_total",
+		"nephtys_stream_state",
+	}
+	// Compared as a sorted list, so the literal above does not double as an
+	// ordering constraint on whoever adds the next metric.
+	sort.Strings(want)
+
+	// A *Vec reports no metric family until it has at least one child, so
+	// materialize one series per metric before gathering, and drop them again
+	// afterwards so the default registry is left as this test found it.
+	streamID := "metrics-test-names"
+	t.Cleanup(func() {
+		EventsIngested.DeleteLabelValues(streamID)
+		EventsDropped.DeleteLabelValues(streamID, "filter")
+		BytesIngested.DeleteLabelValues(streamID)
+		BytesPublished.DeleteLabelValues(streamID)
+		EventsPublished.DeleteLabelValues(streamID)
+		EventProcessingDuration.DeleteLabelValues(streamID)
+		DedupCacheSize.DeleteLabelValues(streamID)
+		DedupCacheEvictions.DeleteLabelValues(streamID)
+		DeleteStreamState(streamID)
+	})
+	EventsIngested.WithLabelValues(streamID).Inc()
+	EventsDropped.WithLabelValues(streamID, "filter").Inc()
+	BytesIngested.WithLabelValues(streamID).Add(1)
+	BytesPublished.WithLabelValues(streamID).Add(1)
+	EventsPublished.WithLabelValues(streamID).Inc()
+	EventProcessingDuration.WithLabelValues(streamID).Observe(0.001)
+	DedupCacheSize.WithLabelValues(streamID).Set(1)
+	DedupCacheEvictions.WithLabelValues(streamID).Inc()
+	SetStreamState(streamID, "connected")
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+
+	var got []string
+	for _, f := range families {
+		name := f.GetName()
+		// The Go runtime and process collectors keep their standard names.
+		if strings.HasPrefix(name, "go_") || strings.HasPrefix(name, "process_") || strings.HasPrefix(name, "promhttp_") {
+			continue
+		}
+		got = append(got, name)
+	}
+	sort.Strings(got)
+
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("exposed Nephtys metrics:\n got %v\nwant %v", got, want)
 	}
 }
 
