@@ -32,6 +32,24 @@ type StreamEvent struct {
 	Data []byte `json:"-"`
 }
 
+// IsBinary reports whether this event's bytes live on Data rather than inside
+// the JSON envelope. It mirrors the encoding rule applied on the publish path,
+// so middlewares and the broker agree on where an event's content is.
+func (e StreamEvent) IsBinary() bool {
+	return e.ContentType != "" && e.ContentType != ContentTypeJSON
+}
+
+// Body returns the bytes that identify this event's content: Data for binary
+// events, Payload otherwise. Middlewares that hash or inspect content must use
+// this rather than reading Payload directly — a binary event leaves Payload
+// nil, so reading it yields the same empty value for every such event.
+func (e StreamEvent) Body() []byte {
+	if e.IsBinary() {
+		return e.Data
+	}
+	return e.Payload
+}
+
 // SourceStatus represents the current state of a stream source.
 type SourceStatus string
 

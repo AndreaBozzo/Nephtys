@@ -54,7 +54,12 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 				for i, e := range batch {
 					payloads[i] = e.Payload
 				}
-				arrayPayload, _ := json.Marshal(payloads)
+				arrayPayload, err := json.Marshal(payloads)
+				if err != nil {
+					slog.Error("batch marshal failed, dropping batch", "topic", lastTopic, "size", len(batch), "error", err)
+					batch = batch[:0]
+					return
+				}
 
 				batchedEvent := domain.StreamEvent{
 					Source:    batch[0].Source,
@@ -70,14 +75,40 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 				batch = batch[:0] // Reset batch, keeping allocated capacity
 			}
 
+			// drainAndFlush empties the buffered channel into the current
+			// batch before flushing. Events already accepted by the handler
+			// were reported to the source as published; discarding them on
+			// shutdown or a pipeline hot-swap would be silent data loss.
+			drainAndFlush := func() {
+				for {
+					select {
+					case te, ok := <-eventCh:
+						// A closed channel is always ready; without this guard
+						// the loop would append zero-value events forever.
+						if !ok {
+							flush()
+							return
+						}
+						batch = append(batch, te.event)
+						lastTopic = te.topic
+						if len(batch) >= maxSize {
+							flush()
+						}
+					default:
+						flush()
+						return
+					}
+				}
+			}
+
 			for {
 				select {
 				case <-ctx.Done():
-					flush()
+					drainAndFlush()
 					return
 				case te, ok := <-eventCh:
 					if !ok {
-						flush()
+						drainAndFlush()
 						return // Channel closed, terminate worker
 					}
 					batch = append(batch, te.event)
@@ -94,6 +125,22 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 
 		// The returned handler just pushes to the channel
 		return func(topic string, event domain.StreamEvent) error {
+			// Binary events cannot be aggregated: the batch envelope is a JSON
+			// array built from Payload, which is nil for them, and it carries
+			// no ContentType. Batching one would discard its Data entirely, so
+			// pass it straight through instead. The cost is that binary events
+			// may overtake JSON events still sitting in the buffer on a stream
+			// that mixes both — preferable to losing them.
+			if event.IsBinary() {
+				return next(topic, event)
+			}
+
+			// Prefer reporting a closed pipeline over handing an event to a
+			// channel whose worker has already drained and exited.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
 			select {
 			case eventCh <- topicEvent{topic: topic, event: event}:
 				return nil

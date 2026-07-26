@@ -299,3 +299,70 @@ func TestBuilderFullConfig(t *testing.T) {
 		t.Error("expected duplicate event to be dropped")
 	}
 }
+
+// Binary events leave Payload nil and carry their bytes on Data. Hashing
+// Payload alone gives every binary event the same hash, so all but the first
+// are dropped as duplicates regardless of their actual content.
+func TestDedupMiddleware_BinaryEventsHashTheirData(t *testing.T) {
+	cfg := &domain.DedupConfig{Enabled: true, CacheSize: 10, TTL: "1h"}
+	dedup := NewDedup("test", cfg)
+
+	var passed int
+	handler := dedup(func(topic string, e domain.StreamEvent) error {
+		passed++
+		return nil
+	})
+
+	binary := func(data []byte) domain.StreamEvent {
+		return domain.StreamEvent{
+			Source:      "test",
+			Type:        "websocket_binary",
+			ContentType: domain.ContentTypeBinary,
+			Data:        data,
+		}
+	}
+
+	// Three frames with distinct bytes must all pass.
+	for i, frame := range [][]byte{{0x01}, {0x02}, {0x01, 0x02}} {
+		passed = 0
+		_ = handler("topic", binary(frame))
+		if passed != 1 {
+			t.Errorf("distinct binary frame %d was dropped as a duplicate", i)
+		}
+	}
+
+	// A genuine repeat still dedups.
+	passed = 0
+	_ = handler("topic", binary([]byte{0x01}))
+	if passed != 0 {
+		t.Error("repeated binary frame was not deduplicated")
+	}
+}
+
+// A binary event and a JSON event must not collide just because one of the two
+// content fields is empty on each.
+func TestDedupMiddleware_BinaryAndJSONDoNotCollide(t *testing.T) {
+	cfg := &domain.DedupConfig{Enabled: true, CacheSize: 10, TTL: "1h"}
+	dedup := NewDedup("test", cfg)
+
+	var passed int
+	handler := dedup(func(topic string, e domain.StreamEvent) error {
+		passed++
+		return nil
+	})
+
+	passed = 0
+	_ = handler("topic", domain.StreamEvent{Payload: json.RawMessage(`{"id":1}`)})
+	if passed != 1 {
+		t.Fatal("first JSON event should pass")
+	}
+
+	passed = 0
+	_ = handler("topic", domain.StreamEvent{
+		ContentType: domain.ContentTypeBinary,
+		Data:        []byte{0x99},
+	})
+	if passed != 1 {
+		t.Error("binary event was dropped as a duplicate of an unrelated JSON event")
+	}
+}
