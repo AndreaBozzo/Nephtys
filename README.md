@@ -310,7 +310,7 @@ make all             # Run fmt + vet + test (the standard pre-commit cycle)
 ### Docker Management
 
 ```bash
-make docker-build # Build the production Docker image
+make docker-build # Build the production Docker image (add VERSION=v0.3.0 to stamp a release)
 make docker-up    # Start NATS JetStream for local development
 make docker-down  # Stop and remove the local containers
 ```

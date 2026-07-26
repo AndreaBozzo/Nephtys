@@ -7,6 +7,10 @@ export
 BINARY := nephtys
 CMD := ./cmd/nephtys
 
+# Stamped into the image by docker-build. Override for a release:
+#   make docker-build VERSION=v0.3.0
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 .PHONY: help build run test coverage fmt vet lint clean check-examples docker-up docker-down docker-build all
 
 help: ## Show this help message
@@ -62,7 +66,7 @@ docker-up: ## Start NATS with docker compose
 docker-down: ## Stop NATS
 	docker compose down
 
-docker-build: ## Build the Docker image
-	docker build -t nephtys:latest .
+docker-build: ## Build the production Docker image (override VERSION=v0.3.0)
+	docker build --build-arg VERSION="$(VERSION)" -t $(BINARY):latest .
 
 all: fmt vet test ## Run fmt, vet, and tests

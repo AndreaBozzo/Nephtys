@@ -19,6 +19,7 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 - Definitive Raspberry Pi 5 edge comparison against Node-RED 5.0.1 in `docs/benchmarks/`: 19.51 ± 0.07 MB vs 128.47 ± 0.44 MB tool RSS (6.59×) at identical byte/message reduction and matching event-sequence hashes, with no throttling. Wall power was indistinguishable between the two systems (3.610 ± 0.005 W vs 3.584 ± 0.014 W), so no energy advantage is claimed: the board's ~3.0 W idle floor dominates a 40 events/s workload.
 
 ### Changed
+- The Docker image is hardened ahead of publishing it. It now runs as `nonroot` (uid 65532) instead of root, stamps the version through a `VERSION` build arg so `docker run … --version` reports a release rather than a commit hash, and cross-compiles with `--platform=$BUILDPLATFORM` plus `GOARCH=$TARGETARCH` so the arm64 leg of a multi-arch build no longer runs the Go toolchain under QEMU emulation. A new `.dockerignore` cuts the build context from ~13 MB to the ~350 KB the build actually needs. (#40)
 - Logs are now emitted through an explicit `slog` text handler on stderr, so records carry `time=`/`level=`/`msg=` keys instead of the Go standard-logger prefix. Field names and destination are otherwise unchanged. (#38)
 - Citation updated to reflect the accepted status of the IEEE UIC 2026 short paper.
 
