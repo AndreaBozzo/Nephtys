@@ -1,0 +1,129 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+# Read-only by default. Only `publish` widens this, and only for itself.
+permissions:
+  contents: read
+
+env:
+  # Literal and lowercase on purpose. github.repository_owner is "AndreaBozzo",
+  # and registry paths must be lowercase — interpolating it would produce a
+  # reference that `docker pull` rejects in the smoke test below.
+  IMAGE: ghcr.io/andreabozzo/nephtys
+
+# `build` and `publish` are mutually exclusive on the event, so nothing is
+# built twice. They are separate jobs rather than one job with conditional
+# steps because `permissions` cannot take an expression: a single job would
+# have to declare packages: write unconditionally, handing that scope to
+# pull-request runs that have no use for it.
+jobs:
+  build:
+    name: Build image
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # No setup-qemu-action: the builder stage is pinned to $BUILDPLATFORM and
+      # Go cross-compiles to $TARGETARCH, while the runtime stage only copies a
+      # binary into a distroless base. Nothing is ever executed for the foreign
+      # architecture, so there is nothing to emulate.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Proves the Dockerfile still builds for both targets. Nothing is pushed
+      # and no registry credential exists in this job.
+      - name: Build both architectures
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: nephtys:pr-${{ github.event.pull_request.number }}
+          build-args: |
+            VERSION=pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    name: Publish image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # Predictable by ref: main publishes `edge`, a vX.Y.Z tag publishes
+          # the full version, the X.Y series, and moves `latest`. Every build
+          # also gets an immutable short-sha tag.
+          tags: |
+            type=edge,branch=main
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=Nephtys
+            org.opencontainers.image.description=Lightweight real-time stream connector publishing normalized events to NATS JetStream
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # metadata-action derives a clean version from the ref: the tag for a
+          # release, `edge` for main. Without this the image reports `dev`.
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Proves the published image actually runs before anyone pulls it. Only
+      # the native arch is executed here; the arm64 leg is verified by
+      # inspecting the manifest, since this runner cannot run arm64 binaries.
+      - name: Smoke-test the published image
+        run: |
+          set -euo pipefail
+          tag="${{ env.IMAGE }}:${{ steps.meta.outputs.version }}"
+          echo "Pulling $tag"
+          docker pull "$tag"
+          echo "--- version ---"
+          docker run --rm "$tag" --version
+          echo "--- manifest architectures ---"
+          docker buildx imagetools inspect "$tag" \
+            --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{"\n"}}{{end}}' \
+            | grep -E '^linux/(amd64|arm64)$' | sort -u | tee /tmp/arches
+          for want in linux/amd64 linux/arm64; do
+            grep -qx "$want" /tmp/arches || { echo "missing $want in manifest" >&2; exit 1; }
+          done

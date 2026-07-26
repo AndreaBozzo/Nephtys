@@ -134,12 +134,32 @@ flowchart LR
 
 ## Quick Start
 
-### Prerequisites
+### Run the published image
 
-- **Go** 1.25+
-- **Docker** (to rapidly provision NATS)
+No toolchain required — multi-architecture images (`linux/amd64`, `linux/arm64`) are published to GHCR:
 
-### Setup
+```bash
+# A shared network so Nephtys can resolve NATS by name on every platform.
+# Idempotent, so the block is safe to re-run.
+docker network create nephtys 2>/dev/null || true
+
+docker run -d --name nats --network nephtys -p 4222:4222 \
+  nats:alpine --jetstream --store_dir /data
+
+docker run --rm --name nephtys --network nephtys -p 3002:3002 \
+  -e NATS_URL=nats://nats:4222 \
+  ghcr.io/andreabozzo/nephtys:edge
+```
+
+`edge` tracks `main`; released versions are tagged `0.3.0`, `0.3`, and `latest`. The image runs as a non-root user and contains only the statically linked binary.
+
+```bash
+docker run --rm ghcr.io/andreabozzo/nephtys:edge --version
+```
+
+### Build from source
+
+**Prerequisites:** **Go** 1.25+ and **Docker** (to rapidly provision NATS).
 
 ```bash
 # Clone the repository
