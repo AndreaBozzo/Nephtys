@@ -17,19 +17,48 @@ services:
       timeout: 3s
       retries: 3
 
+  # Optional: run Nephtys itself inside the stack from the published image
+  # instead of `make run` on the host. Enable with the "nephtys" profile:
+  #   docker compose --profile nephtys up -d      (or: make docker-up-full)
+  # Left out of the default `make docker-up` so the local development loop —
+  # edit, `make run`, scrape over host.docker.internal — is unchanged.
+  nephtys:
+    image: ghcr.io/andreabozzo/nephtys:edge
+    container_name: nephtys_app
+    profiles: ["nephtys"]
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      - NATS_URL=nats://nats:4222
+      - NEPHTYS_PORT=3002
+      - NEPHTYS_LOG_LEVEL=${NEPHTYS_LOG_LEVEL:-info}
+      # Unset by default: protected endpoints return 403 until you set a token.
+      - NEPHTYS_ADMIN_TOKEN=${NEPHTYS_ADMIN_TOKEN:-}
+    depends_on:
+      nats:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:latest
     container_name: nephtys_prometheus
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # Makes host.docker.internal resolve on Linux too, so the host-run target in
+    # prometheus.yml works without Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   renderer:
     image: grafana/grafana-image-renderer:latest
     container_name: nephtys_renderer
     ports:
       - "8081:8081"
+    environment:
+      # Must match GF_RENDERING_RENDERER_TOKEN on the grafana service below.
+      - AUTH_TOKEN=${GF_RENDERER_TOKEN:-nephtys-local-dev}
 
   grafana:
     image: grafana/grafana:latest
@@ -39,7 +68,22 @@ services:
     environment:
       - GF_RENDERING_SERVER_URL=http://renderer:8081/render
       - GF_RENDERING_CALLBACK_URL=http://grafana:3000/
+      # Recent Grafana refuses to start the rendering service while this is left
+      # at its built-in default, so the stack must set it explicitly. This value
+      # only guards Grafana → renderer calls inside the compose network; override
+      # GF_RENDERER_TOKEN in .env if you expose the stack beyond localhost.
+      - GF_RENDERING_RENDERER_TOKEN=${GF_RENDERER_TOKEN:-nephtys-local-dev}
       - GF_LOG_FILTERS=rendering:debug
+    volumes:
+      # Datasource + dashboard provider definitions, read at startup. Mounted as
+      # two subdirectories rather than over /etc/grafana/provisioning as a whole,
+      # which would mask the image's own plugins/ and alerting/ directories and
+      # make Grafana log a provisioning error for each on every boot.
+      - ./deploy/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # Dashboard JSON, referenced by the provider above. Read-only: the JSON in
+      # git is the source of truth, so UI edits are deliberately not persisted.
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
       - renderer

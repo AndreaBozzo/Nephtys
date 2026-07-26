@@ -118,7 +118,7 @@ func (m *StreamManager) Remove(id string) error {
 	delete(m.dones, id)
 	delete(m.stateDones, id)
 	delete(m.runtimes, id)
-	telemetry.DeleteStreamState(id)
+	telemetry.DeleteStreamSeries(id)
 
 	// Remove persisted config
 	if m.store != nil {

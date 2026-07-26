@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: Nephtys
+    orgId: 1
+    folder: Nephtys
+    type: file
+    # The dashboard JSON is the source of truth in git; edits made in the UI are
+    # not written back and are lost on restart. Use "Save As" to experiment.
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

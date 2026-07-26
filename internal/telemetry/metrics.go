@@ -58,6 +58,15 @@ var (
 		Help: "Current number of entries in each stream's dedup LRU.",
 	}, []string{"stream_id"})
 
+	// DedupCacheCapacity reports the configured LRU capacity for each stream's
+	// dedup middleware (cfg.CacheSize, or the 1000 default). Exposing it as a
+	// gauge lets a dashboard plot saturation as size/capacity without knowing
+	// the stream config; it is set once when the middleware is built.
+	DedupCacheCapacity = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "nephtys_dedup_cache_capacity",
+		Help: "Configured maximum number of entries in each stream's dedup LRU.",
+	}, []string{"stream_id"})
+
 	// DedupCacheEvictions counts LRU evictions caused by a full cache
 	// (excludes TTL-expired entries replaced in-place). A growing rate
 	// indicates the dedup cache is undersized for the unique-payload rate.
@@ -85,4 +94,31 @@ func DeleteStreamState(streamID string) {
 	for _, state := range streamStates {
 		StreamState.DeleteLabelValues(streamID, state)
 	}
+}
+
+// DeleteDedupSeries removes the dedup gauges and counter for a stream. Called
+// when a pipeline is built without dedup, so a stream that had the middleware
+// removed stops reporting a frozen cache size and capacity that no longer
+// describe anything running.
+func DeleteDedupSeries(streamID string) {
+	DedupCacheSize.DeleteLabelValues(streamID)
+	DedupCacheCapacity.DeleteLabelValues(streamID)
+	DedupCacheEvictions.DeleteLabelValues(streamID)
+}
+
+// DeleteStreamSeries removes every per-stream series for an unregistered
+// stream. Without it a deleted stream leaves its counters and gauges behind
+// for the lifetime of the process: cardinality grows with every registration,
+// and dashboards keep charting a stream that no longer exists. The dropped
+// counter is label-partitioned by middleware, so it is cleared by matching on
+// stream_id rather than by enumerating middleware names.
+func DeleteStreamSeries(streamID string) {
+	DeleteStreamState(streamID)
+	DeleteDedupSeries(streamID)
+	EventsIngested.DeleteLabelValues(streamID)
+	EventsPublished.DeleteLabelValues(streamID)
+	BytesIngested.DeleteLabelValues(streamID)
+	BytesPublished.DeleteLabelValues(streamID)
+	EventProcessingDuration.DeleteLabelValues(streamID)
+	EventsDropped.DeletePartialMatch(prometheus.Labels{"stream_id": streamID})
 }

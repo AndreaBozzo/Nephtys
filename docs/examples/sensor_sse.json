@@ -9,9 +9,6 @@
     }
   },
   "pipeline": {
-    "filter": {
-      "match_types": ["edit", "new"]
-    },
     "enrich": {
       "tags": {
         "source": "wikimedia",
