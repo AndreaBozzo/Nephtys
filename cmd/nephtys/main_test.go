@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
 )
 
 func TestResolveVersion_OverrideWins(t *testing.T) {
@@ -238,7 +241,9 @@ func TestConfigureLogging_AppliesLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		withDefaultLogger(t)
-		configureLogging(tt.level)
+		// Captured, not written: the invalid case warns, and that warning is
+		// asserted elsewhere — here it would just be noise in `go test` output.
+		_ = captureStderr(t, func() { configureLogging(tt.level) })
 
 		for _, lvl := range tt.enabled {
 			if !slog.Default().Enabled(context.Background(), lvl) {
@@ -253,10 +258,12 @@ func TestConfigureLogging_AppliesLevel(t *testing.T) {
 	}
 }
 
-// The fallback path must say why it fell back, and name the bad value — a
-// silent downgrade to info is how a mistyped env var goes unnoticed for weeks.
-func TestConfigureLogging_InvalidWarnsOnce(t *testing.T) {
-	withDefaultLogger(t)
+// captureStderr redirects os.Stderr for the duration of fn and returns what was
+// written to it. Restoration and descriptor closing are also registered with
+// t.Cleanup, so an early t.Fatalf cannot leave the process's stderr pointing at
+// an abandoned pipe or leak the descriptors.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
 
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -264,7 +271,15 @@ func TestConfigureLogging_InvalidWarnsOnce(t *testing.T) {
 	}
 	origStderr := os.Stderr
 	os.Stderr = w
-	configureLogging("verbose")
+	t.Cleanup(func() {
+		os.Stderr = origStderr
+		_ = w.Close()
+		_ = r.Close()
+	})
+
+	fn()
+
+	// Close the write end before reading, otherwise ReadAll never sees EOF.
 	os.Stderr = origStderr
 	_ = w.Close()
 
@@ -272,8 +287,16 @@ func TestConfigureLogging_InvalidWarnsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read captured stderr: %v", err)
 	}
+	return string(out)
+}
 
-	got := string(out)
+// The fallback path must say why it fell back, and name the bad value — a
+// silent downgrade to info is how a mistyped env var goes unnoticed for weeks.
+func TestConfigureLogging_InvalidWarnsOnce(t *testing.T) {
+	withDefaultLogger(t)
+
+	got := captureStderr(t, func() { configureLogging("verbose") })
+
 	if !strings.Contains(got, "verbose") {
 		t.Errorf("warning %q does not name the offending value", got)
 	}
@@ -285,21 +308,71 @@ func TestConfigureLogging_InvalidWarnsOnce(t *testing.T) {
 func TestConfigureLogging_ValidIsSilent(t *testing.T) {
 	withDefaultLogger(t)
 
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
+	if got := captureStderr(t, func() { configureLogging("debug") }); got != "" {
+		t.Errorf("configureLogging(\"debug\") wrote %q, want no output", got)
 	}
-	origStderr := os.Stderr
-	os.Stderr = w
-	configureLogging("debug")
-	os.Stderr = origStderr
-	_ = w.Close()
+}
 
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read captured stderr: %v", err)
+// runService is the only place where NEPHTYS_LOG_LEVEL actually reaches the
+// running process, so cover the wiring end to end rather than just the helper.
+//
+// Terminating runService needs a failure it cannot recover from, since
+// delivering SIGTERM to our own process is not portable. An out-of-range REST
+// port makes net.Listen fail identically on every platform, so the server
+// goroutine reports the error and runService returns. Occupying a real port
+// does not work: Windows happily grants a second bind to the same address, and
+// the server then blocks in Accept forever.
+func TestRunService_AppliesLogLevelDuringStartup(t *testing.T) {
+	withDefaultLogger(t)
+
+	opts := &natsserver.Options{
+		Host:      "127.0.0.1",
+		Port:      -1, // random free port
+		JetStream: true,
+		StoreDir:  t.TempDir(),
 	}
-	if len(out) != 0 {
-		t.Errorf("configureLogging(\"debug\") wrote %q, want no output", out)
+	ns, err := natsserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("create embedded nats: %v", err)
+	}
+	ns.Start()
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("embedded nats not ready")
+	}
+	t.Cleanup(ns.Shutdown)
+
+	t.Setenv("NATS_URL", ns.ClientURL())
+	t.Setenv("NEPHTYS_PORT", "99999") // Out of range: net.Listen rejects it everywhere.
+	t.Setenv("NEPHTYS_LOG_LEVEL", "error")
+
+	errCh := make(chan error, 1)
+	// Startup logs at info and below must be suppressed by the level we set,
+	// so capture whatever does escape and assert on it afterwards.
+	out := captureStderr(t, func() {
+		errCh <- runService()
+	})
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("runService returned nil despite an unavailable REST port")
+		}
+		if !strings.Contains(err.Error(), "server error") {
+			t.Errorf("error %q does not identify the server as the failure", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runService did not return after the listen failure")
+	}
+
+	// The banner is logged at info; at error level it must not appear. This is
+	// the actual regression guard: before the fix the level was ignored.
+	if strings.Contains(out, "Starting Nephtys Edge Connector") {
+		t.Errorf("NEPHTYS_LOG_LEVEL=error did not suppress the info banner: %q", out)
+	}
+	if !slog.Default().Enabled(context.Background(), slog.LevelError) {
+		t.Error("error level should remain enabled")
+	}
+	if slog.Default().Enabled(context.Background(), slog.LevelInfo) {
+		t.Error("NEPHTYS_LOG_LEVEL=error should suppress info")
 	}
 }
