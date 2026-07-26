@@ -8,6 +8,12 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-26
+
+Operational visibility and distribution: Nephtys now ships as a multi-architecture container image, exposes a coherent `nephtys_`-namespaced metrics surface, and comes with a provisioned Grafana operations dashboard that works from `docker compose up` with no manual setup.
+
+**Upgrading from 0.2.0:** every Prometheus metric was renamed to carry the `nephtys_` prefix. Scrape rules, alerts and dashboards referring to the old names need updating — see the mapping table under Changed.
+
 ### Added
 - Provisioned Grafana operations dashboard. `docker compose up -d` now yields a Grafana with the Prometheus datasource and a *Nephtys — Operations* dashboard already present — no manual import. Panels cover per-stream state, ingest/publish event and byte rates, drops broken down by middleware, processing-latency quantiles, and dedup cache saturation against configured capacity, all scoped by `Instance` and `Stream` variables. The dashboard JSON lives in [`deploy/grafana/`](deploy/grafana/) and is mounted read-only, so it is reviewed as source rather than exported by hand from a running instance. (#42)
 - Optional `nephtys` compose service running the published GHCR image, behind the `nephtys` profile (`make docker-up-full`). The default `make docker-up` is unchanged, so the edit/`make run` loop still works as before. Prometheus now lists both the in-compose and host-run targets, and its `host.docker.internal` target resolves on Linux too via a `host-gateway` alias, retiring the "does not resolve without Docker Desktop" caveat. (#42)
@@ -86,6 +92,7 @@ Initial public release.
 - Prometheus metrics endpoint, initial Grafana/Prometheus compose stack and image renderer service.
 - CI (gofmt, go vet, race-enabled tests), Codecov integration, Apache-2.0 license, contribution and governance docs.
 
-[Unreleased]: https://github.com/AndreaBozzo/Nephtys/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/AndreaBozzo/Nephtys/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/AndreaBozzo/Nephtys/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AndreaBozzo/Nephtys/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AndreaBozzo/Nephtys/releases/tag/v0.1.0
