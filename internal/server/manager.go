@@ -174,17 +174,12 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 		return fmt.Errorf("source %q not found", id)
 	}
 
-	// Cancel the old pipeline's batch goroutine (if any)
-	if oldCancel, ok := m.pipelineCancels[id]; ok {
-		oldCancel()
-	}
-
-	// Create a new context for the replacement pipeline
+	// Build the replacement generation *before* retiring the running one.
+	// The old handler has to stay usable right up to the swap: a batch
+	// middleware refuses events once its context is cancelled, so cancelling
+	// first would turn every event arriving during the rebuild into a
+	// "context canceled" error handed back to the source.
 	pipeCtx, pipeCancel := context.WithCancel(context.Background())
-	m.pipelineCancels[id] = pipeCancel
-	m.mu.Unlock()
-
-	// Update the running handler atomically
 	pipe := pipeline.BuildFromConfig(pipeCtx, id, pipelineCfg)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
 		telemetry.EventsPublished.WithLabelValues(id).Inc()
@@ -192,11 +187,28 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 		return m.broker.Publish(topic, event)
 	})
 
+	oldCancel := m.pipelineCancels[id]
+	m.pipelineCancels[id] = pipeCancel
 	atomicRef.Store(&handler)
+	m.mu.Unlock()
+
+	// Retire the previous generation only after the swap. Its batch worker
+	// drains and flushes whatever it had already accepted (see NewBatch), so
+	// the handover neither drops buffered events nor rejects new ones.
+	//
+	// One narrow window survives: a publisher that has already loaded the old
+	// handler pointer but not yet called it can still observe the cancelled
+	// context. Closing it would require refcounting in-flight publishers on
+	// the hot path, which the atomic-pointer design exists to avoid.
+	if oldCancel != nil {
+		oldCancel()
+	}
 	m.logger.Info("Stream pipeline hot-reloaded", "id", id)
 
-	// Note: We don't update JetStream KV store here since Dynamic Context Adaptation
-	// is typically transient. If persistence is needed, we would add store.Update().
+	// The swap is runtime-only: the JetStream KV copy of the config still
+	// describes the previous pipeline, so a restart silently reverts it.
+	// That contradicts the documented persistence contract and is tracked
+	// as a defect, not a design choice — see #28.
 	return nil
 }
 

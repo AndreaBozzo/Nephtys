@@ -134,20 +134,25 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 				return next(topic, event)
 			}
 
-			// Prefer reporting a closed pipeline over handing an event to a
-			// channel whose worker has already drained and exited. The select
-			// below still needs its own ctx.Done case for the narrower race
-			// where cancellation lands while this send is blocked on a full
-			// buffer.
+			// A cancelled context means this generation has been retired —
+			// either the process is shutting down or a pipeline hot-swap
+			// replaced it. Its worker has drained and exited, so the event
+			// cannot be buffered; forward it downstream unbatched instead of
+			// failing it back to the source. The batch envelope is a shape,
+			// not the data: losing it beats dropping the event or reporting
+			// an ingest error for a swap the operator asked for.
+			//
+			// The second case matters under load: publishers park here on a
+			// full buffer, and the retiring worker unblocks them by exiting.
 			if err := ctx.Err(); err != nil {
-				return err
+				return next(topic, event)
 			}
 
 			select {
 			case eventCh <- topicEvent{topic: topic, event: event}:
 				return nil
 			case <-ctx.Done():
-				return ctx.Err()
+				return next(topic, event)
 			}
 		}
 	}

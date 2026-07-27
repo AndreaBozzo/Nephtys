@@ -8,6 +8,12 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+### Changed
+- `docs/ROADMAP.md` transitioned past 0.3.0: the multi-architecture image, ops dashboard, per-stream state surface, and example enforcement moved from "remaining gaps" into completed foundations, and the configuration-contract gap was recorded in their place.
+
+### Fixed
+- Pipeline hot-swap no longer fails events that arrive mid-replacement. `UpdatePipeline` cancelled the running pipeline before building its replacement, so every event ingested during the rebuild reached a batch worker whose context was already cancelled and came back to the source as `context canceled`. The replacement generation is now built and installed first, and the previous one retired afterwards. A retired batch generation also publishes stragglers individually instead of rejecting them — including publishers parked on its full buffer, which it now releases — so a swap under sustained load neither drops events nor reports ingest errors.
+
 ## [0.3.0] — 2026-07-26
 
 Operational visibility and distribution: Nephtys now ships as a multi-architecture container image, exposes a coherent `nephtys_`-namespaced metrics surface, and comes with a provisioned Grafana operations dashboard that works from `docker compose up` with no manual setup.

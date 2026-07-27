@@ -186,21 +186,74 @@ func TestBatchMiddleware_CancelDrainsBufferedEvents(t *testing.T) {
 	}
 }
 
-// Once the context is cancelled the handler must reject new events rather than
-// park them in a buffer whose worker has exited.
-func TestBatchMiddleware_RejectsAfterCancel(t *testing.T) {
+// Once the context is cancelled the handler must not park events in a buffer
+// whose worker has exited — it forwards them downstream unbatched, so a
+// hot-swap or shutdown neither drops them nor errors them back to the source.
+func TestBatchMiddleware_PassesThroughAfterCancel(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 10, FlushInterval: "1h"}
 	ctx, cancel := context.WithCancel(context.Background())
 	batch := NewBatch(ctx, cfg)
-	handler := batch(func(topic string, e domain.StreamEvent) error { return nil })
+
+	forwarded := make(chan domain.StreamEvent, 1)
+	handler := batch(func(topic string, e domain.StreamEvent) error {
+		forwarded <- e
+		return nil
+	})
 
 	cancel()
 	// Give the worker a moment to observe cancellation and exit.
 	time.Sleep(50 * time.Millisecond)
 
-	err := handler("topic", domain.StreamEvent{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)})
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("handler after cancel returned %v, want context.Canceled", err)
+	if err := handler("topic", domain.StreamEvent{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)}); err != nil {
+		t.Fatalf("handler after cancel returned %v, want nil", err)
+	}
+
+	select {
+	case got := <-forwarded:
+		if got.Type != "evt" {
+			t.Errorf("forwarded type = %q, want %q (unbatched passthrough)", got.Type, "evt")
+		}
+	default:
+		t.Fatal("event after cancel was neither batched nor forwarded")
+	}
+}
+
+// A publisher parked on a full buffer when the generation is retired must be
+// released with its event forwarded, not failed.
+func TestBatchMiddleware_BlockedSendPassesThroughOnCancel(t *testing.T) {
+	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 1, FlushInterval: "1h"}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	release := make(chan struct{})
+	batch := NewBatch(ctx, cfg)
+	handler := batch(func(topic string, e domain.StreamEvent) error {
+		<-release // wedge the worker so the buffer stays full
+		return nil
+	})
+
+	evt := domain.StreamEvent{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)}
+	// The first event wedges the worker inside flush (max_batch_size 1), the
+	// second fills the one-slot buffer. A third send has nowhere to go.
+	for i := 0; i < 2; i++ {
+		if err := handler("topic", evt); err != nil {
+			t.Fatalf("pre-cancel publish %d: %v", i, err)
+		}
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- handler("topic", evt) }()
+
+	time.Sleep(50 * time.Millisecond) // let the send block
+	cancel()
+	close(release)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("blocked publisher returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked publisher was not released after cancel")
 	}
 }
 
