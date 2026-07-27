@@ -144,6 +144,14 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 			//
 			// The second case matters under load: publishers park here on a
 			// full buffer, and the retiring worker unblocks them by exiting.
+			//
+			// Neither check can be made airtight from here: a sender that
+			// passes the ctx.Err() check microseconds before cancellation can
+			// still land its event in a buffer the worker has already drained,
+			// where nothing will ever pick it up. Re-checking Done immediately
+			// before the send does not close that — it is the same read one
+			// instruction later. Closing it needs the retirement itself to be
+			// synchronous with the senders (issue #57).
 			if err := ctx.Err(); err != nil {
 				return next(topic, event)
 			}

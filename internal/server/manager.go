@@ -167,10 +167,10 @@ func (m *StreamManager) Restore() error {
 
 // UpdatePipeline hot-swaps the pipeline config for a running stream.
 func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineConfig) error {
-	m.mu.Lock()
-	atomicRef, exists := m.pipelineRefs[id]
+	m.mu.RLock()
+	_, exists := m.pipelineRefs[id]
+	m.mu.RUnlock()
 	if !exists {
-		m.mu.Unlock()
 		return fmt.Errorf("source %q not found", id)
 	}
 
@@ -179,6 +179,10 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 	// middleware refuses events once its context is cancelled, so cancelling
 	// first would turn every event arriving during the rebuild into a
 	// "context canceled" error handed back to the source.
+	//
+	// The build happens outside the lock. It starts middleware goroutines and
+	// touches Prometheus collectors, and no other manager operation should
+	// queue behind that.
 	pipeCtx, pipeCancel := context.WithCancel(context.Background())
 	pipe := pipeline.BuildFromConfig(pipeCtx, id, pipelineCfg)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
@@ -186,6 +190,19 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 		telemetry.BytesPublished.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
 		return m.broker.Publish(topic, event)
 	})
+
+	m.mu.Lock()
+	atomicRef, exists := m.pipelineRefs[id]
+	if !exists {
+		// The stream was removed while we were building. Retire what we just
+		// built rather than installing it on a dead stream, and drop the
+		// dedup series it published — Remove already cleaned those up, so
+		// leaving them would resurrect gauges for a stream that is gone.
+		m.mu.Unlock()
+		pipeCancel()
+		telemetry.DeleteDedupSeries(id)
+		return fmt.Errorf("source %q not found", id)
+	}
 
 	oldCancel := m.pipelineCancels[id]
 	m.pipelineCancels[id] = pipeCancel
