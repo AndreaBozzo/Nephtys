@@ -2,16 +2,20 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
 	"nephtys/internal/broker"
+	"nephtys/internal/connector"
 	"nephtys/internal/domain"
 	"nephtys/internal/store"
 )
@@ -292,4 +296,92 @@ func TestUpdatePipeline_WithBroker(t *testing.T) {
 	}
 
 	manager.StopAll()
+}
+
+// TestUpdatePipeline_ConcurrentIngestion covers the hot-swap ordering: events
+// arriving while a batching pipeline is being replaced must keep flowing. If
+// the old generation is cancelled before the new handler is published, the
+// retired batch worker rejects them with "context canceled".
+func TestUpdatePipeline_ConcurrentIngestion(t *testing.T) {
+	srv := startTestNATS(t)
+	brk := connectBroker(t, srv)
+
+	if err := brk.EnsureStream("NEPHTYS", []string{"nephtys.stream.>"}); err != nil {
+		t.Fatalf("ensure stream: %v", err)
+	}
+
+	manager := NewStreamManager(brk, nil)
+	t.Cleanup(manager.StopAll)
+
+	batching := func() *domain.PipelineConfig {
+		return &domain.PipelineConfig{
+			Batch: &domain.BatchConfig{Enabled: true, MaxBatchSize: 50, FlushInterval: "50ms"},
+		}
+	}
+
+	src := &publishingMockSource{
+		id:      "swap-under-load",
+		ready:   make(chan connector.PublishFunc, 1),
+		stopped: make(chan struct{}),
+	}
+	cfg := domain.StreamSourceConfig{
+		ID:       src.id,
+		Kind:     "websocket",
+		Topic:    "nephtys.stream.swap",
+		Pipeline: batching(),
+	}
+	if err := manager.Register(src, cfg); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	publish := <-src.ready
+
+	var (
+		wg       sync.WaitGroup
+		stop     = make(chan struct{})
+		errMu    sync.Mutex
+		firstErr error
+		accepted atomic.Int64
+	)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				err := publish(cfg.Topic, domain.StreamEvent{
+					Source:  src.id,
+					Type:    "tick",
+					Payload: json.RawMessage(`{"v":1}`),
+				})
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					return
+				}
+				accepted.Add(1)
+			}
+		}()
+	}
+
+	for i := 0; i < 50; i++ {
+		if err := manager.UpdatePipeline(src.id, batching()); err != nil {
+			t.Errorf("update pipeline: %v", err)
+			break
+		}
+	}
+	close(stop)
+	wg.Wait()
+
+	errMu.Lock()
+	defer errMu.Unlock()
+	if firstErr != nil {
+		t.Fatalf("ingestion failed during pipeline swap after %d events: %v", accepted.Load(), firstErr)
+	}
 }

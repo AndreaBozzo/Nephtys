@@ -28,13 +28,15 @@ Completed foundations:
 - durable event and configuration persistence through NATS JetStream;
 - runtime pipeline reconfiguration;
 - WebSocket post-connect frames, including reconnect replay;
-- per-stream ingest, publish, drop, latency, and dedup metrics;
-- changelog discipline and reproducible examples;
+- per-stream ingest, publish, drop, latency, and dedup metrics, plus a per-stream state gauge and `health`/`last_message_at` on the stream API;
+- multi-architecture GHCR images with a `docker run` quickstart and a provisioned Grafana operations dashboard (0.3.0);
+- changelog discipline and reproducible examples, with `--config-check` enforced over every published example;
 - a controlled Node-RED comparison and accepted systems paper.
 
 Remaining product gaps:
 
-- distribution is incomplete: no published multi-architecture container or binary releases;
+- distribution stops at the container: no binary releases, checksums, or provenance;
+- configuration validation is structural, not semantic: `--config-check` does not reject unknown fields or invalid middleware values, and malformed durations fall back to defaults instead of failing;
 - operational recovery needs a connector supervisor and explicit restart policy;
 - the generic sensor story needs a second end-to-end public consumer;
 - replay is supported by JetStream but not yet taught as a first-class workflow;
@@ -53,16 +55,16 @@ Remaining product gaps:
 
 ## 4. Release sequence
 
-### Current release — operational surface and distribution
+### Shipped — operational surface and distribution (0.3.0)
 
-Exit criteria:
+Exit criteria, all met:
 
 - per-stream state gauge plus `health` and `last_message_at` in the stream API;
 - multi-architecture GHCR image with a verified `docker run` quickstart;
 - changelog and GitHub release notes;
 - existing configurations remain backward-compatible.
 
-### Operational proof release
+### Current release — operational proof
 
 Exit criteria:
 
@@ -70,6 +72,7 @@ Exit criteria:
 - a documented replay/backfill recipe with an integration test;
 - a connector supervisor with bounded restart policy, recovery tests, and terminal state visibility.
 - durable pipeline updates with restart and storage-failure tests;
+- an authoritative configuration contract: strict decoding and full middleware validation, with no silent fallback for malformed explicit values;
 - separate liveness and readiness probes;
 - a shared connector lifecycle conformance suite with deterministic fault fixtures.
 
