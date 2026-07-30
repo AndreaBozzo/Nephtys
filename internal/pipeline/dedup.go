@@ -40,7 +40,7 @@ func NewDedup(streamID string, cfg *domain.DedupConfig) (Middleware, error) {
 		return nil, err
 	}
 
-	cacheSize, err := resolveCount("pipeline.dedup.cache_size", cfg.CacheSize, defaultDedupCacheSize)
+	cacheSize, err := resolveCount("pipeline.dedup.cache_size", cfg.CacheSize, defaultDedupCacheSize, maxDedupCacheSize)
 	if err != nil {
 		return nil, err
 	}

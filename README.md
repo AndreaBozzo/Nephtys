@@ -323,7 +323,8 @@ cat config.json | nephtys --config-check -          # same, from stdin (useful i
 
 - **Unknown fields are errors.** A misspelled `flush_intervl` is rejected rather than dropped, and so is content after the JSON object.
 - **An omitted value takes its documented default; a stated-but-invalid one is an error.** `dedup.ttl`, `batch.flush_interval`, and `rest_poller.interval` used to swallow a parse failure and fall back — `"5 m"` ran at the 1s default with nothing in the logs. Absent still means "no opinion"; present-and-unparseable now fails.
-- **Configuration that cannot do anything is rejected**: an enabled `threshold` with no `path`, an empty `match_types` / `mapping` / `tags`, a negative `cache_size` or `max_batch_size`, and a connector block belonging to a different `kind` than the stream's.
+- **Configuration that cannot do anything is rejected**: an enabled `threshold` with no `path`, an empty `match_types` / `mapping` / `tags`, and a connector block belonging to a different `kind` than the stream's.
+- **The two counts that size an allocation are bounded at both ends.** `dedup.cache_size` preallocates its LRU map and `batch.max_batch_size` sizes the batch worker's channel buffer, so both are capped (1,000,000 and 100,000) as well as required to be positive — a stray zero should be a rejected config, not an out-of-memory kill. Both ceilings sit well above any supported workload; a batch near the upper one would already exceed NATS' 1 MB default `max_payload`.
 - **Errors name the offending JSON path**, e.g. `pipeline.batch.flush_interval: "1 sec" is not a valid duration`.
 
 The same rules apply to `PUT /v1/streams/{id}/pipeline`, which returns 400 on anything `--config-check` rejects, and to configs restored from JetStream at startup — a persisted config the current validator rejects is skipped with a warning rather than started.

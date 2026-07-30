@@ -121,6 +121,13 @@ func TestValidateConfig_Rejects(t *testing.T) {
 			"pipeline.dedup.cache_size",
 		},
 		{
+			// cache_size preallocates the LRU map, so an unbounded value turns a
+			// stray zero into an out-of-memory kill instead of a rejected config.
+			"dedup cache_size above the ceiling",
+			&domain.PipelineConfig{Dedup: &domain.DedupConfig{Enabled: true, CacheSize: maxDedupCacheSize + 1}},
+			"pipeline.dedup.cache_size",
+		},
+		{
 			"enabled threshold without a path",
 			&domain.PipelineConfig{Threshold: &domain.ThresholdConfig{Enabled: true}},
 			"pipeline.threshold.path",
@@ -138,6 +145,12 @@ func TestValidateConfig_Rejects(t *testing.T) {
 		{
 			"negative batch max_batch_size",
 			&domain.PipelineConfig{Batch: &domain.BatchConfig{Enabled: true, MaxBatchSize: -4}},
+			"pipeline.batch.max_batch_size",
+		},
+		{
+			// max_batch_size sizes the worker's channel buffer.
+			"batch max_batch_size above the ceiling",
+			&domain.PipelineConfig{Batch: &domain.BatchConfig{Enabled: true, MaxBatchSize: maxBatchSize + 1}},
 			"pipeline.batch.max_batch_size",
 		},
 	}
@@ -169,14 +182,23 @@ func TestResolveDuration_AbsentDefaultsPresentFails(t *testing.T) {
 	}
 }
 
-func TestResolveCount_AbsentDefaultsNegativeFails(t *testing.T) {
-	got, err := resolveCount("x", 0, 100)
+func TestResolveCount_BoundsBothEnds(t *testing.T) {
+	got, err := resolveCount("x", 0, 100, 1000)
 	if err != nil || got != 100 {
 		t.Errorf("omitted value = (%v, %v), want (100, nil)", got, err)
 	}
 
-	if _, err := resolveCount("x", -1, 100); err == nil {
+	if _, err := resolveCount("x", -1, 100, 1000); err == nil {
 		t.Error("negative value returned no error, so it silently took the default")
+	}
+
+	// The ceiling is what keeps the allocation sites bounded by a constant. A
+	// value above it must fail rather than be handed to make().
+	if _, err := resolveCount("x", 1001, 100, 1000); err == nil {
+		t.Error("value above the ceiling returned no error")
+	}
+	if got, err := resolveCount("x", 1000, 100, 1000); err != nil || got != 1000 {
+		t.Errorf("value at the ceiling = (%v, %v), want (1000, nil)", got, err)
 	}
 }
 

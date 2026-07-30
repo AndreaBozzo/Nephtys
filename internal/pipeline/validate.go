@@ -17,6 +17,23 @@ const (
 	defaultMaxBatchSize   = 100
 )
 
+// Ceilings on the two config values that size an allocation directly:
+// dedup.cache_size preallocates its LRU map and batch.max_batch_size sizes the
+// worker's channel buffer. Without an upper bound a stray zero in a config file
+// is an out-of-memory kill rather than a rejected config — on an edge binary
+// whose whole claim is a ~19 MB footprint, that is the more likely mistake by
+// far. These are safety valves, not tuning limits: both sit well above any
+// workload Nephtys is built for.
+const (
+	// A 1m dedup window at 10k events/s needs ~600k entries, so a million is
+	// already generous for the edge deployments this targets.
+	maxDedupCacheSize = 1_000_000
+
+	// Batches are published as one NATS message and the server's default
+	// max_payload is 1 MB, so a batch this large cannot be delivered anyway.
+	maxBatchSize = 100_000
+)
+
 // resolveDuration turns an optional duration field into a value. An omitted
 // field takes def; a field that is present but unparseable or non-positive is
 // an error.
@@ -42,14 +59,22 @@ func resolveDuration(path, raw string, def time.Duration) (time.Duration, error)
 }
 
 // resolveCount turns an optional positive-count field into a value, applying
-// def when the field is omitted (zero) and rejecting a negative value rather
-// than silently replacing it with def.
-func resolveCount(path string, raw, def int) (int, error) {
+// def when the field is omitted (zero) and rejecting a value outside
+// (0, max] rather than silently replacing it with def.
+//
+// The upper bound is load-bearing, not decorative: these counts size an
+// allocation, so returning an unbounded operator-supplied value hands a config
+// typo the ability to exhaust memory. Keeping the check here also keeps the
+// allocation sites provably bounded by a constant.
+func resolveCount(path string, raw, def, limit int) (int, error) {
 	if raw == 0 {
 		return def, nil
 	}
 	if raw < 0 {
 		return 0, fmt.Errorf("%s: must be a positive count, got %d", path, raw)
+	}
+	if raw > limit {
+		return 0, fmt.Errorf("%s: must not exceed %d, got %d", path, limit, raw)
 	}
 	return raw, nil
 }
@@ -109,7 +134,7 @@ func ValidateConfig(cfg *domain.PipelineConfig) error {
 		if _, err := resolveDuration("pipeline.dedup.ttl", d.TTL, defaultDedupTTL); err != nil {
 			return err
 		}
-		if _, err := resolveCount("pipeline.dedup.cache_size", d.CacheSize, defaultDedupCacheSize); err != nil {
+		if _, err := resolveCount("pipeline.dedup.cache_size", d.CacheSize, defaultDedupCacheSize, maxDedupCacheSize); err != nil {
 			return err
 		}
 	}
@@ -129,7 +154,7 @@ func ValidateConfig(cfg *domain.PipelineConfig) error {
 		if _, err := resolveDuration("pipeline.batch.flush_interval", b.FlushInterval, defaultFlushInterval); err != nil {
 			return err
 		}
-		if _, err := resolveCount("pipeline.batch.max_batch_size", b.MaxBatchSize, defaultMaxBatchSize); err != nil {
+		if _, err := resolveCount("pipeline.batch.max_batch_size", b.MaxBatchSize, defaultMaxBatchSize, maxBatchSize); err != nil {
 			return err
 		}
 	}

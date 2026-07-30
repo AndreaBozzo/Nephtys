@@ -20,7 +20,7 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) (Middleware, error) 
 		return nil, nil
 	}
 
-	maxSize, err := resolveCount("pipeline.batch.max_batch_size", cfg.MaxBatchSize, defaultMaxBatchSize)
+	maxSize, err := resolveCount("pipeline.batch.max_batch_size", cfg.MaxBatchSize, defaultMaxBatchSize, maxBatchSize)
 	if err != nil {
 		return nil, err
 	}
