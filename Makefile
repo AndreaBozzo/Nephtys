@@ -11,7 +11,7 @@ CMD := ./cmd/nephtys
 #   make docker-build VERSION=v0.3.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: help build run test coverage fmt vet lint clean check-examples docker-up docker-up-full docker-down docker-build all
+.PHONY: help build run test bench coverage fmt vet lint clean check-examples docker-up docker-up-full docker-down docker-build all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -27,6 +27,9 @@ run: ## Run the application
 
 test: ## Run all tests
 	go test -race -cover ./...
+
+bench: ## Run benchmarks (pipeline publish path and broker)
+	go test -run XXX -bench . -benchmem ./internal/pipeline/ ./internal/broker/
 
 coverage: ## Generate HTML coverage report
 	go test -race -coverprofile=coverage.out ./...

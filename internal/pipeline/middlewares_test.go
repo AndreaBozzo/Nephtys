@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -261,14 +260,14 @@ func TestBuilderFullConfig(t *testing.T) {
 		Dedup:  &domain.DedupConfig{Enabled: true},
 	}
 
-	pipe := mustBuild(t, context.Background(), "test", cfg)
-
 	var res *domain.StreamEvent
 	sink := func(topic string, e domain.StreamEvent) error {
 		res = &e
 		return nil
 	}
-	handler := pipe.Execute(sink)
+
+	gen := mustGeneration(t, "test", cfg, sink)
+	handler := gen.Publish
 
 	// 1. Event dropped by filter (wrong type)
 	droppedEvt := domain.StreamEvent{Type: "blocked", Payload: json.RawMessage(`{}`)}

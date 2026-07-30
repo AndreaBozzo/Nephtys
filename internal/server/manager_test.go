@@ -86,17 +86,55 @@ func (m *mockSource) isStopped() bool {
 	return m.stopped
 }
 
+// mockConfig is the minimal valid stream config for a mock source.
+func mockConfig(id string) domain.StreamSourceConfig {
+	return domain.StreamSourceConfig{ID: id, Kind: "websocket", Topic: "nephtys.stream.test"}
+}
+
+// registerMock registers a mock source through the real Register path, so the
+// manager's per-stream state — including its pipeline generation — is populated
+// the way production populates it.
+func registerMock(t *testing.T, m *StreamManager, src connector.StreamSource) {
+	t.Helper()
+	if err := m.Register(src, mockConfig(src.ID())); err != nil {
+		t.Fatalf("register %s: %v", src.ID(), err)
+	}
+}
+
+// waitForStatus blocks until src reports want. Register starts the source in a
+// goroutine, so a test that asserts on status has to wait for it rather than
+// race it.
+func waitForStatus(t *testing.T, src connector.StreamSource, want domain.SourceStatus) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if src.Status() == want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("source %s status = %q, want %q", src.ID(), src.Status(), want)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 func TestStreamManager_RegisterAndList(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
 
 	src := &mockSource{id: "test-1", status: domain.StatusIdle}
 
-	// Register should work, but since we pass nil broker, we need to test
-	// the list/remove logic directly. The Register method calls source.Start
-	// in a goroutine with a real publish func, so we test the tracking state.
-	manager.mu.Lock()
-	manager.sources[src.id] = src
-	manager.mu.Unlock()
+	// A nil broker is fine here: mockSource never publishes, so the terminal
+	// handler is never reached. Going through Register rather than poking the
+	// manager's maps keeps every stream's state consistently populated — Remove
+	// and StopAll rely on that.
+	registerMock(t, manager, src)
+	// Register starts the source in a goroutine; mockSource reports Running
+	// once it has. The full status-to-health mapping is covered by
+	// TestSourceHealthAndMetricState — what matters here is that List reflects
+	// the source's actual state and that a stream which has never emitted
+	// reports no last_message_at.
+	waitForStatus(t, src, domain.StatusRunning)
 
 	streams := manager.List()
 	if len(streams) != 1 {
@@ -105,8 +143,8 @@ func TestStreamManager_RegisterAndList(t *testing.T) {
 	if streams[0].ID != "test-1" {
 		t.Errorf("expected id 'test-1', got %q", streams[0].ID)
 	}
-	if streams[0].Health != "degraded" {
-		t.Errorf("expected degraded health, got %q", streams[0].Health)
+	if streams[0].Health != "healthy" {
+		t.Errorf("expected healthy health, got %q", streams[0].Health)
 	}
 	if streams[0].LastMessageAt != nil {
 		t.Errorf("expected no last_message_at, got %v", streams[0].LastMessageAt)
@@ -120,8 +158,8 @@ func TestStreamManager_ListIncludesHealthAndLastMessageAt(t *testing.T) {
 	runtime := &streamRuntime{}
 	runtime.lastMessageUnixNano.Store(want.UnixNano())
 
+	registerMock(t, manager, src)
 	manager.mu.Lock()
-	manager.sources[src.id] = src
 	manager.runtimes[src.id] = runtime
 	manager.mu.Unlock()
 
@@ -233,9 +271,7 @@ func TestStreamManager_RemoveExisting(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
 	src := &mockSource{id: "rm-me", status: domain.StatusRunning}
 
-	manager.mu.Lock()
-	manager.sources[src.id] = src
-	manager.mu.Unlock()
+	registerMock(t, manager, src)
 	telemetry.SetStreamState(src.id, "connected")
 
 	err := manager.Remove("rm-me")
@@ -269,17 +305,10 @@ func TestStreamManager_DuplicateRegister(t *testing.T) {
 	src1 := &mockSource{id: "dupe", status: domain.StatusRunning}
 	src2 := &mockSource{id: "dupe", status: domain.StatusIdle}
 
-	manager.mu.Lock()
-	manager.sources[src1.id] = src1
-	manager.mu.Unlock()
+	registerMock(t, manager, src1)
 
-	// Try registering a duplicate directly through the map check
-	manager.mu.RLock()
-	_, exists := manager.sources[src2.ID()]
-	manager.mu.RUnlock()
-
-	if !exists {
-		t.Fatal("expected duplicate to be detected")
+	if err := manager.Register(src2, mockConfig(src2.ID())); err == nil {
+		t.Fatal("expected a duplicate registration to be rejected")
 	}
 }
 
@@ -292,12 +321,10 @@ func TestStreamManager_StopAll(t *testing.T) {
 		{id: "c", status: domain.StatusRunning},
 	}
 
-	manager.mu.Lock()
 	for _, s := range sources {
-		manager.sources[s.id] = s
+		registerMock(t, manager, s)
 		telemetry.SetStreamState(s.id, "connected")
 	}
-	manager.mu.Unlock()
 
 	manager.StopAll()
 

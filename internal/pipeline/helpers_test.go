@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"context"
 	"testing"
 
 	"nephtys/internal/domain"
@@ -11,9 +10,11 @@ import (
 // malformed value. These helpers keep tests that exercise *behavior* free of
 // that error handling; the error paths themselves are covered in validate_test.go.
 
-func mustBatch(tb testing.TB, ctx context.Context, cfg *domain.BatchConfig) Middleware {
+// mustBatch builds a batch middleware against gen. Pass a generation from
+// newGeneration when the test drives retirement itself.
+func mustBatch(tb testing.TB, gen *Generation, cfg *domain.BatchConfig) Middleware {
 	tb.Helper()
-	mw, err := NewBatch(ctx, cfg)
+	mw, err := NewBatch(gen, cfg)
 	if err != nil {
 		tb.Fatalf("NewBatch: %v", err)
 	}
@@ -29,11 +30,14 @@ func mustDedup(tb testing.TB, streamID string, cfg *domain.DedupConfig) Middlewa
 	return mw
 }
 
-func mustBuild(tb testing.TB, ctx context.Context, streamID string, cfg *domain.PipelineConfig) *Pipeline {
+// mustGeneration builds a full generation and retires it when the test ends, so
+// no test leaks a batch worker.
+func mustGeneration(tb testing.TB, streamID string, cfg *domain.PipelineConfig, publish Handler) *Generation {
 	tb.Helper()
-	pipe, err := BuildFromConfig(ctx, streamID, cfg)
+	gen, err := NewGeneration(streamID, cfg, publish)
 	if err != nil {
-		tb.Fatalf("BuildFromConfig: %v", err)
+		tb.Fatalf("NewGeneration: %v", err)
 	}
-	return pipe
+	tb.Cleanup(gen.Retire)
+	return gen
 }

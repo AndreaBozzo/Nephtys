@@ -32,6 +32,7 @@ Completed foundations:
 - multi-architecture GHCR images with a `docker run` quickstart and a provisioned Grafana operations dashboard (0.3.0);
 - changelog discipline and reproducible examples, with `--config-check` enforced over every published example;
 - an authoritative configuration contract: one strict decoder and one validator behind `--config-check`, the REST API, and restore, with no silent fallback for a malformed explicit value;
+- deterministic pipeline-generation retirement, so a hot-swap has no window in which an accepted event is stranded;
 - a controlled Node-RED comparison and accepted systems paper.
 
 Remaining product gaps:
@@ -75,8 +76,7 @@ Exit criteria:
 - an authoritative configuration contract: strict decoding and full middleware validation, with no silent fallback for malformed explicit values;
 - the effective configuration of a running stream readable back over the API, so an operator can confirm what a stream is actually running;
 - separate liveness and readiness probes;
-- a shared connector lifecycle conformance suite with deterministic fault fixtures;
-- deterministic pipeline-generation retirement, so a hot-swap has no window in which an accepted event is stranded.
+- a shared connector lifecycle conformance suite with deterministic fault fixtures.
 
 The reference deployment is a prerequisite for designing backpressure because it supplies a second consumer shape beyond Mercury.
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
@@ -448,8 +451,71 @@ func TestUpdatePipeline_ConcurrentIngestion(t *testing.T) {
 	wg.Wait()
 
 	errMu.Lock()
-	defer errMu.Unlock()
 	if firstErr != nil {
+		errMu.Unlock()
 		t.Fatalf("ingestion failed during pipeline swap after %d events: %v", accepted.Load(), firstErr)
 	}
+	errMu.Unlock()
+
+	// Retire the final generation so its buffered batch is flushed, and with it
+	// every event still in flight. StopAll is what a shutdown does; running it
+	// here rather than leaving it to t.Cleanup makes the count below a
+	// statement about a completed handover rather than a race with one.
+	manager.StopAll()
+
+	// Absence of errors is not delivery. Every event the source handed to the
+	// pipeline was reported to it as accepted, so every one of them has to
+	// reach the broker — a stranded event fails no publish and increments no
+	// counter, which is exactly what made #57 invisible.
+	want := accepted.Load()
+	if want == 0 {
+		t.Fatal("no events were ingested, so the test asserts nothing")
+	}
+	got := countPublished(t, brk, cfg.Topic)
+	if got != want {
+		t.Errorf("broker received %d of %d accepted events — %d were stranded by a pipeline swap", got, want, want-got)
+	}
+}
+
+// countPublished totals the events the broker holds for a topic, unwrapping
+// batched envelopes so the count is in source events rather than messages.
+func countPublished(t *testing.T, brk *broker.Broker, topic string) int64 {
+	t.Helper()
+
+	sub, err := brk.JetStream().PullSubscribe(topic, "", nats.BindStream("NEPHTYS"))
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	var total int64
+	for {
+		msgs, err := sub.Fetch(256, nats.MaxWait(500*time.Millisecond))
+		if errors.Is(err, nats.ErrTimeout) {
+			return total
+		}
+		if err != nil {
+			t.Fatalf("fetch: %v", err)
+		}
+		for _, msg := range msgs {
+			total += eventsInMessage(t, msg.Data)
+			_ = msg.Ack()
+		}
+	}
+}
+
+// eventsInMessage reports how many source events a published message carries: a
+// batch envelope holds a JSON array of payloads, anything else holds one event.
+func eventsInMessage(t *testing.T, data []byte) int64 {
+	t.Helper()
+
+	var envelope domain.StreamEvent
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	var batched []json.RawMessage
+	if err := json.Unmarshal(envelope.Payload, &batched); err == nil {
+		return int64(len(batched))
+	}
+	return 1
 }

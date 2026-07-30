@@ -20,33 +20,37 @@ import (
 // It persists stream configurations to a JetStream KV store so streams
 // survive restarts.
 type StreamManager struct {
-	mu              sync.RWMutex
-	sources         map[string]connector.StreamSource
-	pipelineRefs    map[string]*atomic.Pointer[pipeline.Handler]
-	pipelineCancels map[string]context.CancelFunc // cancels batch goroutines on pipeline swap
-	cancels         map[string]context.CancelFunc
-	dones           map[string]chan struct{}
-	stateDones      map[string]chan struct{}
-	runtimes        map[string]*streamRuntime
-	broker          *broker.Broker
-	store           *store.StreamStore // nil in tests
-	logger          *slog.Logger
+	mu sync.RWMutex
+
+	sources map[string]connector.StreamSource
+
+	// generations holds the pipeline generation each stream is currently
+	// publishing through. The pointer is swapped on a hot-swap; the generation
+	// it displaces is retired, which is what makes the handover lossless.
+	generations map[string]*atomic.Pointer[pipeline.Generation]
+
+	cancels    map[string]context.CancelFunc
+	dones      map[string]chan struct{}
+	stateDones map[string]chan struct{}
+	runtimes   map[string]*streamRuntime
+	broker     *broker.Broker
+	store      *store.StreamStore // nil in tests
+	logger     *slog.Logger
 }
 
 // NewStreamManager creates a manager backed by the given broker and store.
 // The store may be nil (e.g. in unit tests), in which case persistence is disabled.
 func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager {
 	return &StreamManager{
-		sources:         make(map[string]connector.StreamSource),
-		pipelineRefs:    make(map[string]*atomic.Pointer[pipeline.Handler]),
-		pipelineCancels: make(map[string]context.CancelFunc),
-		cancels:         make(map[string]context.CancelFunc),
-		dones:           make(map[string]chan struct{}),
-		stateDones:      make(map[string]chan struct{}),
-		runtimes:        make(map[string]*streamRuntime),
-		broker:          brk,
-		store:           st,
-		logger:          slog.With("component", "manager"),
+		sources:     make(map[string]connector.StreamSource),
+		generations: make(map[string]*atomic.Pointer[pipeline.Generation]),
+		cancels:     make(map[string]context.CancelFunc),
+		dones:       make(map[string]chan struct{}),
+		stateDones:  make(map[string]chan struct{}),
+		runtimes:    make(map[string]*streamRuntime),
+		broker:      brk,
+		store:       st,
+		logger:      slog.With("component", "manager"),
 	}
 }
 
@@ -107,10 +111,6 @@ func (m *StreamManager) Remove(id string) error {
 	if cancel, ok := m.cancels[id]; ok {
 		cancel()
 	}
-	// Cancel pipeline context (stops batch goroutines)
-	if pipeCancel, ok := m.pipelineCancels[id]; ok {
-		pipeCancel()
-	}
 
 	// Wait for the source's goroutine to finish shutting down
 	if done, ok := m.dones[id]; ok {
@@ -120,9 +120,15 @@ func (m *StreamManager) Remove(id string) error {
 		<-stateDone
 	}
 
+	// Retire only once the source has stopped publishing, so the pipeline's
+	// final flush is the last thing that happens on this stream. Retire blocks
+	// until every event the pipeline accepted has been handed to the broker.
+	// sources and generations are populated and deleted together, so the entry
+	// is present here.
+	m.generations[id].Load().Retire()
+
 	delete(m.sources, id)
-	delete(m.pipelineRefs, id)
-	delete(m.pipelineCancels, id)
+	delete(m.generations, id)
 	delete(m.cancels, id)
 	delete(m.dones, id)
 	delete(m.stateDones, id)
@@ -191,64 +197,53 @@ func (m *StreamManager) Restore() error {
 // UpdatePipeline hot-swaps the pipeline config for a running stream.
 func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineConfig) error {
 	m.mu.RLock()
-	_, exists := m.pipelineRefs[id]
+	_, exists := m.generations[id]
 	m.mu.RUnlock()
 	if !exists {
 		return fmt.Errorf("source %q not found", id)
 	}
 
 	// Build the replacement generation *before* retiring the running one.
-	// The old handler has to stay usable right up to the swap: a batch
-	// middleware refuses events once its context is cancelled, so cancelling
-	// first would turn every event arriving during the rebuild into a
-	// "context canceled" error handed back to the source.
+	// The old generation has to stay usable right up to the swap: a retired
+	// batch middleware stops buffering, so retiring first would push every
+	// event arriving during the rebuild down the unbatched path.
 	//
 	// The build happens outside the lock. It starts middleware goroutines and
 	// touches Prometheus collectors, and no other manager operation should
 	// queue behind that.
-	pipeCtx, pipeCancel := context.WithCancel(context.Background())
-	pipe, err := pipeline.BuildFromConfig(pipeCtx, id, pipelineCfg)
+	next, err := pipeline.NewGeneration(id, pipelineCfg, m.publishFunc(id))
 	if err != nil {
 		// The running generation is untouched: nothing has been swapped yet, so
 		// a rejected update leaves the stream on its previous pipeline.
-		pipeCancel()
 		return fmt.Errorf("build pipeline: %w", err)
 	}
-	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
-		telemetry.EventsPublished.WithLabelValues(id).Inc()
-		telemetry.BytesPublished.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
-		return m.broker.Publish(topic, event)
-	})
 
 	m.mu.Lock()
-	atomicRef, exists := m.pipelineRefs[id]
+	ref, exists := m.generations[id]
 	if !exists {
 		// The stream was removed while we were building. Retire what we just
 		// built rather than installing it on a dead stream, and drop the
 		// dedup series it published — Remove already cleaned those up, so
 		// leaving them would resurrect gauges for a stream that is gone.
 		m.mu.Unlock()
-		pipeCancel()
+		next.Retire()
 		telemetry.DeleteDedupSeries(id)
 		return fmt.Errorf("source %q not found", id)
 	}
 
-	oldCancel := m.pipelineCancels[id]
-	m.pipelineCancels[id] = pipeCancel
-	atomicRef.Store(&handler)
+	previous := ref.Swap(next)
 	m.mu.Unlock()
 
-	// Retire the previous generation only after the swap. Its batch worker
-	// drains and flushes whatever it had already accepted (see NewBatch), so
-	// the handover neither drops buffered events nor rejects new ones.
+	// Retire the previous generation only after the swap, and outside the lock:
+	// Retire waits for in-flight publishers and for the final flush, neither of
+	// which any other manager operation should queue behind.
 	//
-	// One narrow window survives: a publisher that has already loaded the old
-	// handler pointer but not yet called it can still observe the cancelled
-	// context. Closing it would require refcounting in-flight publishers on
-	// the hot path, which the atomic-pointer design exists to avoid.
-	if oldCancel != nil {
-		oldCancel()
-	}
+	// Publishers that loaded the previous generation before the swap are the
+	// reason this is a handshake rather than a cancel. Retire holds them off
+	// from the buffers, waits for the ones already inside to leave, and only
+	// then lets the batch worker drain — so an event accepted by the outgoing
+	// generation is flushed by it rather than stranded in a buffer nobody owns.
+	previous.Retire()
 	m.logger.Info("Stream pipeline hot-reloaded", "id", id)
 
 	// The swap is runtime-only: the JetStream KV copy of the config still
@@ -289,10 +284,6 @@ func (m *StreamManager) StopAll() {
 		if cancel, ok := m.cancels[id]; ok {
 			cancel()
 		}
-		// Cancel pipeline context (stops batch goroutines)
-		if pipeCancel, ok := m.pipelineCancels[id]; ok {
-			pipeCancel()
-		}
 
 		if done, ok := m.dones[id]; ok {
 			wg.Add(1)
@@ -313,29 +304,41 @@ func (m *StreamManager) StopAll() {
 
 	// Wait for all sources to cleanly exit
 	wg.Wait()
+
+	// Retire each pipeline only after its source has stopped, and wait for the
+	// final flush: on shutdown this is what stands between a buffered batch and
+	// the process exiting without publishing it.
 	for id := range m.sources {
+		m.generations[id].Load().Retire()
 		telemetry.DeleteStreamState(id)
 	}
 
 	m.sources = make(map[string]connector.StreamSource)
-	m.pipelineRefs = make(map[string]*atomic.Pointer[pipeline.Handler])
-	m.pipelineCancels = make(map[string]context.CancelFunc)
+	m.generations = make(map[string]*atomic.Pointer[pipeline.Generation])
 	m.cancels = make(map[string]context.CancelFunc)
 	m.dones = make(map[string]chan struct{})
 	m.stateDones = make(map[string]chan struct{})
 	m.runtimes = make(map[string]*streamRuntime)
 }
 
+// publishFunc returns the terminal handler of a stream's pipeline: the step
+// that counts the event as published and hands it to the broker. Every
+// generation built for a stream — the first and each hot-swapped replacement —
+// ends in this same function.
+func (m *StreamManager) publishFunc(id string) pipeline.Handler {
+	return func(topic string, event domain.StreamEvent) error {
+		telemetry.EventsPublished.WithLabelValues(id).Inc()
+		telemetry.BytesPublished.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
+		return m.broker.Publish(topic, event)
+	}
+}
+
 // startSourceLocked launches a source in a goroutine. Must be called with mu held.
 // It fails without registering anything if the stream's pipeline cannot be
 // built, so a stream never runs with a pipeline other than the one configured.
 func (m *StreamManager) startSourceLocked(id string, source connector.StreamSource, cfg domain.StreamSourceConfig) error {
-	// Pipeline gets its own context so batch goroutines can be cancelled independently
-	pipeCtx, pipeCancel := context.WithCancel(context.Background())
-
-	pipe, err := pipeline.BuildFromConfig(pipeCtx, id, cfg.Pipeline)
+	gen, err := pipeline.NewGeneration(id, cfg.Pipeline, m.publishFunc(id))
 	if err != nil {
-		pipeCancel()
 		return fmt.Errorf("build pipeline: %w", err)
 	}
 
@@ -345,21 +348,14 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 
 	m.sources[id] = source
 	m.cancels[id] = cancel
-	m.pipelineCancels[id] = pipeCancel
 	m.dones[id] = done
 	m.stateDones[id] = stateDone
 	runtime := &streamRuntime{}
 	m.runtimes[id] = runtime
 
-	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
-		telemetry.EventsPublished.WithLabelValues(id).Inc()
-		telemetry.BytesPublished.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
-		return m.broker.Publish(topic, event)
-	})
-
-	var atomicRef atomic.Pointer[pipeline.Handler]
-	atomicRef.Store(&handler)
-	m.pipelineRefs[id] = &atomicRef
+	var ref atomic.Pointer[pipeline.Generation]
+	ref.Store(gen)
+	m.generations[id] = &ref
 
 	instrumentedPublish := func(topic string, event domain.StreamEvent) error {
 		start := time.Now()
@@ -367,8 +363,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 		telemetry.EventsIngested.WithLabelValues(id).Inc()
 		telemetry.BytesIngested.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
 
-		h := *atomicRef.Load()
-		err := h(topic, event)
+		err := ref.Load().Publish(topic, event)
 		telemetry.EventProcessingDuration.WithLabelValues(id).Observe(time.Since(start).Seconds())
 		return err
 	}

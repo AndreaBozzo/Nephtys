@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"context"
 	"encoding/json"
 	"sync/atomic"
 	"testing"
@@ -27,10 +26,12 @@ var sensorPayload = json.RawMessage(`{"station":"openaq-1234","pm25":17.4,` +
 // BenchmarkPipelineEnrich measures the cost of one Enrich pass: JSON
 // unmarshal, map mutate, JSON marshal. This is the single-stage baseline.
 func BenchmarkPipelineEnrich(b *testing.B) {
-	pipe := mustBuild(b, context.Background(), "bench", &domain.PipelineConfig{
+	gen := mustGeneration(b, "bench", &domain.PipelineConfig{
 		Enrich: &domain.EnrichConfig{Tags: map[string]string{"env": "prod", "site": "bo1"}},
-	})
-	handler := pipe.Execute(nopSink)
+	}, nopSink)
+	// The chain only, without the generation's in-flight lock; see
+	// BenchmarkGenerationPublish for the cost that lock adds.
+	handler := gen.handler
 	evt := domain.StreamEvent{Type: "sensor_reading", Payload: sensorPayload}
 
 	b.ResetTimer()
@@ -44,13 +45,15 @@ func BenchmarkPipelineEnrich(b *testing.B) {
 // Transform run, since they each unmarshal+marshal independently. This is
 // the worst-case JSON-cost path on the hot path today.
 func BenchmarkPipelineEnrichTransform(b *testing.B) {
-	pipe := mustBuild(b, context.Background(), "bench", &domain.PipelineConfig{
+	gen := mustGeneration(b, "bench", &domain.PipelineConfig{
 		Transform: &domain.TransformConfig{
 			Mapping: map[string]string{"station_id": "station", "pm25_value": "pm25"},
 		},
 		Enrich: &domain.EnrichConfig{Tags: map[string]string{"env": "prod", "site": "bo1"}},
-	})
-	handler := pipe.Execute(nopSink)
+	}, nopSink)
+	// The chain only, without the generation's in-flight lock; see
+	// BenchmarkGenerationPublish for the cost that lock adds.
+	handler := gen.handler
 	evt := domain.StreamEvent{Type: "sensor_reading", Payload: sensorPayload}
 
 	b.ResetTimer()
@@ -64,10 +67,12 @@ func BenchmarkPipelineEnrichTransform(b *testing.B) {
 // are duplicates (LRU mostly hit). This isolates the FNV-1a + map-lookup
 // + mutex cost without conflating it with downstream stages.
 func BenchmarkPipelineDedupHit(b *testing.B) {
-	pipe := mustBuild(b, context.Background(), "bench", &domain.PipelineConfig{
+	gen := mustGeneration(b, "bench", &domain.PipelineConfig{
 		Dedup: &domain.DedupConfig{Enabled: true, CacheSize: 1024, TTL: "10m"},
-	})
-	handler := pipe.Execute(nopSink)
+	}, nopSink)
+	// The chain only, without the generation's in-flight lock; see
+	// BenchmarkGenerationPublish for the cost that lock adds.
+	handler := gen.handler
 	evt := domain.StreamEvent{Type: "sensor_reading", Payload: sensorPayload}
 
 	// Warm: register the payload in the cache so subsequent calls are hits.
@@ -84,13 +89,15 @@ func BenchmarkPipelineDedupHit(b *testing.B) {
 // end-to-end on a unique payload per iteration (forces dedup miss path).
 // This is the most realistic single-event cost figure.
 func BenchmarkPipelineFullChain(b *testing.B) {
-	pipe := mustBuild(b, context.Background(), "bench", &domain.PipelineConfig{
+	gen := mustGeneration(b, "bench", &domain.PipelineConfig{
 		Filter:    &domain.FilterConfig{MatchTypes: []string{"sensor_reading"}},
 		Transform: &domain.TransformConfig{Mapping: map[string]string{"station_id": "station"}},
 		Dedup:     &domain.DedupConfig{Enabled: true, CacheSize: 100000, TTL: "10m"},
 		Enrich:    &domain.EnrichConfig{Tags: map[string]string{"env": "prod"}},
-	})
-	handler := pipe.Execute(nopSink)
+	}, nopSink)
+	// The chain only, without the generation's in-flight lock; see
+	// BenchmarkGenerationPublish for the cost that lock adds.
+	handler := gen.handler
 
 	// Pre-build unique payloads so we don't measure JSON marshal in the loop.
 	payloads := make([]json.RawMessage, 1024)
@@ -109,4 +116,78 @@ func BenchmarkPipelineFullChain(b *testing.B) {
 		evt := domain.StreamEvent{Type: "sensor_reading", Payload: payloads[i%len(payloads)]}
 		_ = handler("topic", evt)
 	}
+}
+
+// BenchmarkGenerationPublish measures what the retirement contract costs per
+// event: the same chain as BenchmarkPipelineFullChain, reached through
+// Generation.Publish rather than called directly. The delta between the two is
+// the in-flight read lock that makes a lossless hot-swap possible.
+func BenchmarkGenerationPublish(b *testing.B) {
+	gen := mustGeneration(b, "bench", fullChainConfig(), nopSink)
+	payloads := uniquePayloads(1024)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		evt := domain.StreamEvent{Type: "sensor_reading", Payload: payloads[i%len(payloads)]}
+		_ = gen.Publish("topic", evt)
+	}
+}
+
+// BenchmarkGenerationPublishParallel is the case the read lock could actually
+// hurt: push connectors (webhook, gRPC) publish from many goroutines at once,
+// so the reader count is contended rather than uncontended.
+func BenchmarkGenerationPublishParallel(b *testing.B) {
+	gen := mustGeneration(b, "bench-parallel", fullChainConfig(), nopSink)
+	payloads := uniquePayloads(1024)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			evt := domain.StreamEvent{Type: "sensor_reading", Payload: payloads[i%len(payloads)]}
+			_ = gen.Publish("topic", evt)
+			i++
+		}
+	})
+}
+
+func fullChainConfig() *domain.PipelineConfig {
+	return &domain.PipelineConfig{
+		Filter:    &domain.FilterConfig{MatchTypes: []string{"sensor_reading"}},
+		Transform: &domain.TransformConfig{Mapping: map[string]string{"station_id": "station"}},
+		Dedup:     &domain.DedupConfig{Enabled: true, CacheSize: 100000, TTL: "10m"},
+		Enrich:    &domain.EnrichConfig{Tags: map[string]string{"env": "prod"}},
+	}
+}
+
+func uniquePayloads(n int) []json.RawMessage {
+	payloads := make([]json.RawMessage, n)
+	for i := range payloads {
+		p, _ := json.Marshal(map[string]any{"station": i, "pm25": 17.4 + float64(i), "temp_c": 22.0})
+		payloads[i] = p
+	}
+	return payloads
+}
+
+// BenchmarkGenerationOverhead isolates the retirement contract from the work it
+// protects: a passthrough generation, called directly and then through Publish.
+// The difference is the in-flight read lock and nothing else.
+func BenchmarkGenerationOverhead(b *testing.B) {
+	gen := mustGeneration(b, "bench-overhead", nil, nopSink)
+	evt := domain.StreamEvent{Type: "sensor_reading", Payload: sensorPayload}
+
+	b.Run("direct", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = gen.handler("topic", evt)
+		}
+	})
+	b.Run("through_publish", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = gen.Publish("topic", evt)
+		}
+	})
 }

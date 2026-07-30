@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -216,7 +215,7 @@ func TestNewDedup_RejectsMalformedTTL(t *testing.T) {
 }
 
 func TestNewBatch_RejectsMalformedFlushInterval(t *testing.T) {
-	mw, err := NewBatch(context.Background(), &domain.BatchConfig{Enabled: true, FlushInterval: "1 sec"})
+	mw, err := NewBatch(newGeneration(), &domain.BatchConfig{Enabled: true, FlushInterval: "1 sec"})
 	if err == nil {
 		t.Fatal("NewBatch accepted a malformed flush interval")
 	}
@@ -225,11 +224,11 @@ func TestNewBatch_RejectsMalformedFlushInterval(t *testing.T) {
 	}
 }
 
-// TestBuildFromConfig_FailedBuildLeavesNoDedupSeries covers the ordering hazard
+// TestNewGeneration_FailedBuildLeavesNoDedupSeries covers the ordering hazard
 // in the builder: dedup publishes its gauges as a side effect of being built, so
 // a later stage failing would otherwise leave series behind describing a
 // pipeline that never ran.
-func TestBuildFromConfig_FailedBuildLeavesNoDedupSeries(t *testing.T) {
+func TestNewGeneration_FailedBuildLeavesNoDedupSeries(t *testing.T) {
 	streamID := "builder-test-failed-build"
 	t.Cleanup(func() { telemetry.DeleteStreamSeries(streamID) })
 
@@ -238,12 +237,12 @@ func TestBuildFromConfig_FailedBuildLeavesNoDedupSeries(t *testing.T) {
 		Batch: &domain.BatchConfig{Enabled: true, FlushInterval: "1 sec"},
 	}
 
-	pipe, err := BuildFromConfig(context.Background(), streamID, cfg)
+	gen, err := NewGeneration(streamID, cfg, nopSink)
 	if err == nil {
-		t.Fatal("BuildFromConfig accepted a malformed flush interval")
+		t.Fatal("NewGeneration accepted a malformed flush interval")
 	}
-	if pipe != nil {
-		t.Error("BuildFromConfig returned a pipeline alongside an error")
+	if gen != nil {
+		t.Error("NewGeneration returned a generation alongside an error")
 	}
 
 	for _, name := range gatheredSeriesFor(t, streamID) {
