@@ -21,7 +21,7 @@ func TestBatchMiddleware_SizeFlush(t *testing.T) {
 		MaxBatchSize:  2,
 		FlushInterval: "1h", // Never flush by time
 	}
-	batch := NewBatch(context.Background(), cfg)
+	batch := mustBatch(t, context.Background(), cfg)
 
 	events := []domain.StreamEvent{
 		{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)},
@@ -75,7 +75,7 @@ func TestBatchMiddleware_TimeFlush(t *testing.T) {
 		MaxBatchSize:  10,
 		FlushInterval: "50ms",
 	}
-	batch := NewBatch(context.Background(), cfg)
+	batch := mustBatch(t, context.Background(), cfg)
 
 	batched := make(chan domain.StreamEvent, 1)
 	sink := func(topic string, e domain.StreamEvent) error {
@@ -105,7 +105,7 @@ func TestBatchMiddleware_BinaryPassesThroughIntact(t *testing.T) {
 		MaxBatchSize:  100,
 		FlushInterval: "1h", // Never flush by time.
 	}
-	batch := NewBatch(context.Background(), cfg)
+	batch := mustBatch(t, context.Background(), cfg)
 
 	got := make(chan domain.StreamEvent, 4)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -154,7 +154,7 @@ func TestBatchMiddleware_CancelDrainsBufferedEvents(t *testing.T) {
 		FlushInterval: "1h",
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	batch := NewBatch(ctx, cfg)
+	batch := mustBatch(t, ctx, cfg)
 
 	got := make(chan domain.StreamEvent, 1)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -192,7 +192,7 @@ func TestBatchMiddleware_CancelDrainsBufferedEvents(t *testing.T) {
 func TestBatchMiddleware_PassesThroughAfterCancel(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 10, FlushInterval: "1h"}
 	ctx, cancel := context.WithCancel(context.Background())
-	batch := NewBatch(ctx, cfg)
+	batch := mustBatch(t, ctx, cfg)
 
 	forwarded := make(chan domain.StreamEvent, 1)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -225,7 +225,7 @@ func TestBatchMiddleware_BlockedSendPassesThroughOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	release := make(chan struct{})
-	batch := NewBatch(ctx, cfg)
+	batch := mustBatch(t, ctx, cfg)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
 		<-release // wedge the worker so the buffer stays full
 		return nil
@@ -263,7 +263,7 @@ func TestBatchMiddleware_BlockedSendPassesThroughOnCancel(t *testing.T) {
 // as a malformed event.
 func TestBatchMiddleware_MarshalFailureIsReported(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 1, FlushInterval: "1h"}
-	batch := NewBatch(context.Background(), cfg)
+	batch := mustBatch(t, context.Background(), cfg)
 
 	published := make(chan domain.StreamEvent, 1)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -307,7 +307,7 @@ func TestBatchMiddleware_DrainRespectsMaxBatchSize(t *testing.T) {
 	const maxSize = 2
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: maxSize, FlushInterval: "1h"}
 	ctx, cancel := context.WithCancel(context.Background())
-	batch := NewBatch(ctx, cfg)
+	batch := mustBatch(t, ctx, cfg)
 
 	release := make(chan struct{})
 	flushed := make(chan domain.StreamEvent, 4)
@@ -359,7 +359,7 @@ func TestBatchMiddleware_DrainRespectsMaxBatchSize(t *testing.T) {
 // rather than producing a zero-capacity channel.
 func TestBatchMiddleware_DefaultMaxBatchSize(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 0, FlushInterval: "50ms"}
-	batch := NewBatch(context.Background(), cfg)
+	batch := mustBatch(t, context.Background(), cfg)
 
 	flushed := make(chan domain.StreamEvent, 1)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -383,7 +383,7 @@ func TestBatchMiddleware_DefaultMaxBatchSize(t *testing.T) {
 // and cleared, and subsequent batches still flow.
 func TestBatchMiddleware_FlushErrorDoesNotStallWorker(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 1, FlushInterval: "1h"}
-	batch := NewBatch(context.Background(), cfg)
+	batch := mustBatch(t, context.Background(), cfg)
 
 	seen := make(chan domain.StreamEvent, 2)
 	var calls atomic.Int32

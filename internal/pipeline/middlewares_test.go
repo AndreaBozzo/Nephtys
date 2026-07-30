@@ -102,7 +102,7 @@ func TestDedupMiddleware(t *testing.T) {
 		CacheSize: 10,
 		TTL:       "50ms",
 	}
-	dedup := NewDedup("test", cfg)
+	dedup := mustDedup(t, "test", cfg)
 
 	evt1 := domain.StreamEvent{Payload: json.RawMessage(`{"id": 1}`)}
 	evt2 := domain.StreamEvent{Payload: json.RawMessage(`{"id": 2}`)}
@@ -261,7 +261,7 @@ func TestBuilderFullConfig(t *testing.T) {
 		Dedup:  &domain.DedupConfig{Enabled: true},
 	}
 
-	pipe := BuildFromConfig(context.Background(), "test", cfg)
+	pipe := mustBuild(t, context.Background(), "test", cfg)
 
 	var res *domain.StreamEvent
 	sink := func(topic string, e domain.StreamEvent) error {
@@ -305,7 +305,7 @@ func TestBuilderFullConfig(t *testing.T) {
 // are dropped as duplicates regardless of their actual content.
 func TestDedupMiddleware_BinaryEventsHashTheirData(t *testing.T) {
 	cfg := &domain.DedupConfig{Enabled: true, CacheSize: 10, TTL: "1h"}
-	dedup := NewDedup("test", cfg)
+	dedup := mustDedup(t, "test", cfg)
 
 	var passed int
 	handler := dedup(func(topic string, e domain.StreamEvent) error {
@@ -343,7 +343,7 @@ func TestDedupMiddleware_BinaryEventsHashTheirData(t *testing.T) {
 // content fields is empty on each.
 func TestDedupMiddleware_BinaryAndJSONDoNotCollide(t *testing.T) {
 	cfg := &domain.DedupConfig{Enabled: true, CacheSize: 10, TTL: "1h"}
-	dedup := NewDedup("test", cfg)
+	dedup := mustDedup(t, "test", cfg)
 
 	var passed int
 	handler := dedup(func(topic string, e domain.StreamEvent) error {

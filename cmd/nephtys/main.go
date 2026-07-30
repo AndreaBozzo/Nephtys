@@ -1,8 +1,8 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,7 +17,6 @@ import (
 
 	"nephtys/internal/broker"
 	"nephtys/internal/config"
-	"nephtys/internal/domain"
 	"nephtys/internal/server"
 	"nephtys/internal/store"
 )
@@ -102,8 +101,10 @@ func runConfigCheck(path string) error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	var cfg domain.StreamSourceConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	// Decode and validate through the same functions POST /v1/streams uses, so
+	// a config this command accepts is one the running service accepts.
+	cfg, err := server.DecodeStreamConfig(bytes.NewReader(data))
+	if err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
 	if err := server.ValidateStreamConfig(cfg); err != nil {

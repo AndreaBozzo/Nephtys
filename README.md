@@ -317,6 +317,17 @@ nephtys --config-check docs/examples/sensor.json    # validate a stream config a
 cat config.json | nephtys --config-check -          # same, from stdin (useful in CI)
 ```
 
+### Configuration validation
+
+`--config-check` applies exactly the rules `POST /v1/streams` applies — same decoder, same validator — so a config CI accepts is one the running service accepts. The contract it enforces:
+
+- **Unknown fields are errors.** A misspelled `flush_intervl` is rejected rather than dropped, and so is content after the JSON object.
+- **An omitted value takes its documented default; a stated-but-invalid one is an error.** `dedup.ttl`, `batch.flush_interval`, and `rest_poller.interval` used to swallow a parse failure and fall back — `"5 m"` ran at the 1s default with nothing in the logs. Absent still means "no opinion"; present-and-unparseable now fails.
+- **Configuration that cannot do anything is rejected**: an enabled `threshold` with no `path`, an empty `match_types` / `mapping` / `tags`, a negative `cache_size` or `max_batch_size`, and a connector block belonging to a different `kind` than the stream's.
+- **Errors name the offending JSON path**, e.g. `pipeline.batch.flush_interval: "1 sec" is not a valid duration`.
+
+The same rules apply to `PUT /v1/streams/{id}/pipeline`, which returns 400 on anything `--config-check` rejects, and to configs restored from JetStream at startup — a persisted config the current validator rejects is skipped with a warning rather than started.
+
 ## Supported Connectors
 
 | Kind | Direction | Reconnect | Description | Config Keys |

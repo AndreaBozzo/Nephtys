@@ -9,6 +9,16 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ## [Unreleased]
 
 ### Changed
+- **Breaking (configuration):** stream configuration is now validated authoritatively, so configs a previous version accepted may be rejected. `--config-check` previously shared neither the decoder nor the full rule set of `POST /v1/streams`: an empty `id` and an unsupported `kind` such as `"kafka"` both exited 0 from the CLI while the API refused them, and `pipeline` was never inspected at all. Both paths now go through one decoder and one validator. What changed in what is accepted (#55):
+
+  - Unknown and misspelled fields are errors instead of being silently dropped — `"flush_intervl": "5m"` used to validate clean and run the 1s default. Content after the JSON object is rejected too.
+  - A malformed *explicit* value is an error rather than a silent fall back to the default. `dedup.ttl`, `batch.flush_interval`, and `rest_poller.interval` each swallowed their `ParseDuration` error, so `"5 m"` flushed 300× more often than the author intended with nothing in the logs. An omitted field still takes its documented default; the asymmetry is the point. `resolveDuration` in `internal/pipeline` is now the only place these are parsed.
+  - `rest_poller.interval` is checked at config time. It was validated nowhere and failed inside `Start()`, so a stream registered with `201 Created` and its connector died immediately afterwards.
+  - Configuration that cannot do anything is rejected: an enabled `threshold` with no `path` (which built no middleware at all while the stream reported healthy), an empty `filter.match_types` / `transform.mapping` / `enrich.tags`, a negative `cache_size` or `max_batch_size`, a non-upper-case or unknown `rest_poller.method`, and a connector block belonging to a different `kind` than the stream declares.
+  - `PUT /v1/streams/{id}/pipeline` validates its body and returns 400. The one endpoint that changes behavior on a live stream previously ran no validation whatsoever.
+  - Configs restored from the JetStream KV bucket at startup are re-validated and skipped with a warning if they fail. Restore was otherwise the one path that could start a stream from configuration the current validator rejects.
+
+  Validation errors name the offending JSON path (`pipeline.batch.flush_interval: …`). No JSON field was renamed or removed — the change is in what is accepted. Every config in `docs/examples/` still passes, and `go test` now checks that alongside `make check-examples`.
 - `docs/ROADMAP.md` transitioned past 0.3.0: the multi-architecture image, ops dashboard, per-stream state surface, and example enforcement moved from "remaining gaps" into completed foundations, and the configuration-contract gap was recorded in their place.
 
 ### Fixed

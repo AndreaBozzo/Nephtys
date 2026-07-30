@@ -27,7 +27,7 @@ var sensorPayload = json.RawMessage(`{"station":"openaq-1234","pm25":17.4,` +
 // BenchmarkPipelineEnrich measures the cost of one Enrich pass: JSON
 // unmarshal, map mutate, JSON marshal. This is the single-stage baseline.
 func BenchmarkPipelineEnrich(b *testing.B) {
-	pipe := BuildFromConfig(context.Background(), "bench", &domain.PipelineConfig{
+	pipe := mustBuild(b, context.Background(), "bench", &domain.PipelineConfig{
 		Enrich: &domain.EnrichConfig{Tags: map[string]string{"env": "prod", "site": "bo1"}},
 	})
 	handler := pipe.Execute(nopSink)
@@ -44,7 +44,7 @@ func BenchmarkPipelineEnrich(b *testing.B) {
 // Transform run, since they each unmarshal+marshal independently. This is
 // the worst-case JSON-cost path on the hot path today.
 func BenchmarkPipelineEnrichTransform(b *testing.B) {
-	pipe := BuildFromConfig(context.Background(), "bench", &domain.PipelineConfig{
+	pipe := mustBuild(b, context.Background(), "bench", &domain.PipelineConfig{
 		Transform: &domain.TransformConfig{
 			Mapping: map[string]string{"station_id": "station", "pm25_value": "pm25"},
 		},
@@ -64,7 +64,7 @@ func BenchmarkPipelineEnrichTransform(b *testing.B) {
 // are duplicates (LRU mostly hit). This isolates the FNV-1a + map-lookup
 // + mutex cost without conflating it with downstream stages.
 func BenchmarkPipelineDedupHit(b *testing.B) {
-	pipe := BuildFromConfig(context.Background(), "bench", &domain.PipelineConfig{
+	pipe := mustBuild(b, context.Background(), "bench", &domain.PipelineConfig{
 		Dedup: &domain.DedupConfig{Enabled: true, CacheSize: 1024, TTL: "10m"},
 	})
 	handler := pipe.Execute(nopSink)
@@ -84,7 +84,7 @@ func BenchmarkPipelineDedupHit(b *testing.B) {
 // end-to-end on a unique payload per iteration (forces dedup miss path).
 // This is the most realistic single-event cost figure.
 func BenchmarkPipelineFullChain(b *testing.B) {
-	pipe := BuildFromConfig(context.Background(), "bench", &domain.PipelineConfig{
+	pipe := mustBuild(b, context.Background(), "bench", &domain.PipelineConfig{
 		Filter:    &domain.FilterConfig{MatchTypes: []string{"sensor_reading"}},
 		Transform: &domain.TransformConfig{Mapping: map[string]string{"station_id": "station"}},
 		Dedup:     &domain.DedupConfig{Enabled: true, CacheSize: 100000, TTL: "10m"},

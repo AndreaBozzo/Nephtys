@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -79,6 +80,79 @@ func TestHandleCreateStream_InvalidJSON(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// TestHandleCreateStream_RejectsWhatConfigCheckRejects pins the two paths
+// together at the HTTP layer: a body `--config-check` refuses must not be
+// accepted by the endpoint that starts a stream.
+func TestHandleCreateStream_RejectsWhatConfigCheckRejects(t *testing.T) {
+	s := newTestServer()
+
+	bodies := map[string]string{
+		"unsupported kind":    `{"id":"a","kind":"kafka","url":"https://x/y","topic":"t"}`,
+		"misspelled field":    `{"id":"a","kind":"sse","url":"https://x/y","topic":"t","websockets":{}}`,
+		"trailing content":    `{"id":"a","kind":"sse","url":"https://x/y","topic":"t"} {"extra":1}`,
+		"malformed dedup ttl": `{"id":"a","kind":"sse","url":"https://x/y","topic":"t","pipeline":{"dedup":{"enabled":true,"ttl":"5 minutes"}}}`,
+		"mismatched block":    `{"id":"a","kind":"sse","url":"https://x/y","topic":"t","websocket":{"on_connect_send":"{}"}}`,
+		"bad poller interval": `{"id":"a","kind":"rest_poller","url":"https://x/y","topic":"t","rest_poller":{"interval":"every 5s"}}`,
+		"threshold no path":   `{"id":"a","kind":"sse","url":"https://x/y","topic":"t","pipeline":{"threshold":{"enabled":true}}}`,
+		"negative cache size": `{"id":"a","kind":"sse","url":"https://x/y","topic":"t","pipeline":{"dedup":{"enabled":true,"cache_size":-1}}}`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			// Same body through the CLI's decode-and-validate path.
+			cliRejected := false
+			if cfg, err := DecodeStreamConfig(bytes.NewReader([]byte(body))); err != nil {
+				cliRejected = true
+			} else if err := ValidateStreamConfig(cfg); err != nil {
+				cliRejected = true
+			}
+			if !cliRejected {
+				t.Fatalf("--config-check would accept this body, so the test asserts nothing")
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/streams", bytes.NewReader([]byte(body)))
+			w := httptest.NewRecorder()
+			s.handleCreateStream(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestHandleUpdatePipeline_RejectsInvalidPipeline covers the endpoint that
+// changes behavior on a live stream. It previously ran no validation at all, so
+// a malformed duration was accepted with 200 and silently reinterpreted.
+func TestHandleUpdatePipeline_RejectsInvalidPipeline(t *testing.T) {
+	s := newTestServer()
+
+	bodies := map[string]string{
+		"malformed flush_interval": `{"batch":{"enabled":true,"flush_interval":"1 sec"}}`,
+		"malformed ttl":            `{"dedup":{"enabled":true,"ttl":"5 minutes"}}`,
+		"misspelled field":         `{"dedup":{"enabled":true,"tll":"30s"}}`,
+		"threshold without path":   `{"threshold":{"enabled":true}}`,
+		"empty enrich tags":        `{"enrich":{"tags":{}}}`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/v1/streams/ghost/pipeline", bytes.NewReader([]byte(body)))
+			req.SetPathValue("id", "ghost")
+			w := httptest.NewRecorder()
+
+			s.handleUpdatePipeline(w, req)
+
+			// 400 for a bad body, not the 404 an unknown stream would earn:
+			// validation has to run before the stream is looked up, or an
+			// operator fixing a typo on a live stream never learns about it.
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 
@@ -307,29 +381,17 @@ func TestWriteError(t *testing.T) {
 	}
 }
 
-func TestReadJSON_Valid(t *testing.T) {
-	body, _ := json.Marshal(map[string]string{"key": "value"})
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+func TestLimitBody_CapsRequestBody(t *testing.T) {
+	oversized := bytes.Repeat([]byte("a"), 2*1024*1024)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
 	w := httptest.NewRecorder()
 
-	var result map[string]string
-	err := readJSON(w, req, &result)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result["key"] != "value" {
-		t.Errorf("expected 'value', got %q", result["key"])
-	}
-}
-
-func TestReadJSON_Invalid(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("not json")))
-	w := httptest.NewRecorder()
-
-	var result map[string]string
-	err := readJSON(w, req, &result)
+	read, err := io.ReadAll(limitBody(w, req))
 	if err == nil {
-		t.Fatal("expected error for invalid JSON")
+		t.Fatalf("expected an error past the 1MB cap, read %d bytes cleanly", len(read))
+	}
+	if len(read) > 1*1024*1024 {
+		t.Errorf("read %d bytes, want no more than the 1MB cap", len(read))
 	}
 }
 
