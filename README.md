@@ -350,9 +350,25 @@ Pipelines are declared inline on stream registration as JSON. Each middleware is
 - **Dedup** — short-window LRU deduplication on FNV-1a hashes of the event body. Per-stream and in-memory; state is not shared across instances and does not survive restart. Bounded by `cache_size` (default 1000). `ttl` (default `1m`) is enforced lazily: an entry is fresh until the TTL has elapsed since it was last seen, and treated as expired only when its hash is checked again past that window — stale entries that are never re-seen remain in the LRU until evicted by capacity. Size `cache_size` for at least one full TTL window of expected unique payloads.
 - **Enrich** — adds static tags to outgoing events.
 - **Threshold** — emits only when a numeric path changes by at least a configured delta (useful for sensor anomaly filtering).
-- **Batch** — buffers events into bounded batches before publishing. Flushes on `max_batch_size`, on `flush_interval`, and once more when the stream is stopped or its pipeline is replaced, so buffered events are not discarded. An event that arrives after that final flush — a publisher still holding the retired pipeline mid-swap — is published on its own rather than batched or rejected: the batch envelope is a shape, the event is data.
+- **Batch** — buffers events into bounded batches before publishing. Flushes on `max_batch_size`, on `flush_interval`, and once more when the stream is stopped or its pipeline is replaced, so buffered events are not discarded. An event that arrives mid-swap, from a publisher still holding the retired pipeline, is published on its own rather than batched or rejected: the batch envelope is a shape, the event is data. See [pipeline replacement](#pipeline-replacement) for why that final flush cannot miss an event.
 
 **Binary payloads and the pipeline.** Events whose `content_type` is anything other than `application/json` carry their bytes outside the JSON envelope. Dedup hashes those bytes, so distinct binary frames are treated as distinct. Batch cannot aggregate them into its JSON array envelope without discarding them, so it passes them through individually — on a stream that mixes text and binary frames, binary events may therefore overtake JSON events still sitting in the batch buffer. Transform, threshold, and enrich operate on JSON payloads and pass binary events through untouched; filter matches on `type` and works for both.
+
+### Pipeline replacement
+
+`PUT /v1/streams/{id}/pipeline` replaces a running stream's pipeline without dropping the source connection or losing an event.
+
+A replacement is built first and installed by pointing publishers at it; only then is the outgoing pipeline retired. Retirement is a handshake rather than a cancellation, because publishers reach a pipeline through an unsynchronised pointer and an arbitrary number of them may be mid-call when the swap happens:
+
+1. the outgoing pipeline stops accepting events into buffers, which also releases any publisher parked on a full one;
+2. it waits for the publishers already inside it to finish, and seals at that moment;
+3. its buffering middlewares then drain and flush, and the swap is not reported complete until they have.
+
+The ordering matters because step 3 is only sound after step 2. A worker that drains as soon as it is cancelled can empty and abandon its buffer while a publisher is still on its way in, and an event that lands there afterwards is never flushed and never reported — it fails no publish and increments no counter. Sealing is what rules that out.
+
+The cost is one read-lock pair per event on the publish path, measured at roughly 24 ns with no additional allocations — about 1% of a filter→transform→dedup→enrich chain. `make bench` reports it as `BenchmarkGenerationOverhead`.
+
+The same handshake runs on shutdown and on stream removal, so a buffered batch is flushed before the process exits rather than racing it.
 
 ## Persistence
 

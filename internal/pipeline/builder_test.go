@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"context"
 	"sort"
 	"strings"
 	"testing"
@@ -49,7 +48,7 @@ func TestBuildFromConfigClearsDedupSeriesWhenDedupDropped(t *testing.T) {
 	withDedup := &domain.PipelineConfig{
 		Dedup: &domain.DedupConfig{Enabled: true, CacheSize: 64},
 	}
-	mustBuild(t, context.Background(), streamID, withDedup)
+	mustGeneration(t, streamID, withDedup, nopSink)
 
 	before := gatheredSeriesFor(t, streamID)
 	if !contains(before, "nephtys_dedup_cache_capacity") {
@@ -60,7 +59,7 @@ func TestBuildFromConfigClearsDedupSeriesWhenDedupDropped(t *testing.T) {
 	withoutDedup := &domain.PipelineConfig{
 		Enrich: &domain.EnrichConfig{Tags: map[string]string{"env": "test"}},
 	}
-	mustBuild(t, context.Background(), streamID, withoutDedup)
+	mustGeneration(t, streamID, withoutDedup, nopSink)
 
 	for _, name := range gatheredSeriesFor(t, streamID) {
 		if strings.Contains(name, "dedup") {

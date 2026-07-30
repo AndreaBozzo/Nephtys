@@ -1,22 +1,23 @@
 package pipeline
 
 import (
-	"context"
-
 	"nephtys/internal/domain"
 	"nephtys/internal/telemetry"
 )
 
-// BuildFromConfig creates a pipeline populated with middlewares
-// based on the per-stream configuration.
-// The context controls the lifetime of stateful middlewares (e.g. batch worker).
+// buildFromConfig creates a pipeline populated with middlewares based on the
+// per-stream configuration. The generation owns the lifetime of any stateful
+// middleware it builds (currently only the batch worker).
 //
 // It fails on a configuration it cannot honour exactly as written rather than
 // substituting defaults. Callers that accept configuration from outside the
 // process should reject it with ValidateConfig first, so an operator gets a
 // path-qualified rejection before any middleware is constructed; an error from
 // here means a config passed validation and still could not be built.
-func BuildFromConfig(ctx context.Context, streamID string, cfg *domain.PipelineConfig) (*Pipeline, error) {
+//
+// Unexported because a chain is not usable on its own: NewGeneration is the way
+// to build one, since only a generation can retire it without losing events.
+func buildFromConfig(gen *Generation, streamID string, cfg *domain.PipelineConfig) (*Pipeline, error) {
 	if cfg == nil {
 		return New(), nil // Empty passthrough pipeline
 	}
@@ -58,7 +59,7 @@ func BuildFromConfig(ctx context.Context, streamID string, cfg *domain.PipelineC
 	}
 
 	// 6. Batching (always output as array if enabled, so it's typically the last step)
-	batch, err := NewBatch(ctx, cfg.Batch)
+	batch, err := NewBatch(gen, cfg.Batch)
 	if err != nil {
 		// Dedup already published its gauges by this point. Retract them, or a
 		// pipeline that never ran would keep reporting occupancy and capacity.

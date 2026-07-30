@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -21,7 +20,7 @@ func TestBatchMiddleware_SizeFlush(t *testing.T) {
 		MaxBatchSize:  2,
 		FlushInterval: "1h", // Never flush by time
 	}
-	batch := mustBatch(t, context.Background(), cfg)
+	batch := mustBatch(t, newGeneration(), cfg)
 
 	events := []domain.StreamEvent{
 		{Source: "test", Type: "evt", Payload: json.RawMessage(`{"id":1}`)},
@@ -75,7 +74,7 @@ func TestBatchMiddleware_TimeFlush(t *testing.T) {
 		MaxBatchSize:  10,
 		FlushInterval: "50ms",
 	}
-	batch := mustBatch(t, context.Background(), cfg)
+	batch := mustBatch(t, newGeneration(), cfg)
 
 	batched := make(chan domain.StreamEvent, 1)
 	sink := func(topic string, e domain.StreamEvent) error {
@@ -105,7 +104,7 @@ func TestBatchMiddleware_BinaryPassesThroughIntact(t *testing.T) {
 		MaxBatchSize:  100,
 		FlushInterval: "1h", // Never flush by time.
 	}
-	batch := mustBatch(t, context.Background(), cfg)
+	batch := mustBatch(t, newGeneration(), cfg)
 
 	got := make(chan domain.StreamEvent, 4)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -153,8 +152,8 @@ func TestBatchMiddleware_CancelDrainsBufferedEvents(t *testing.T) {
 		MaxBatchSize:  100, // Large enough that nothing flushes by size.
 		FlushInterval: "1h",
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	batch := mustBatch(t, ctx, cfg)
+	gen := newGeneration()
+	batch := mustBatch(t, gen, cfg)
 
 	got := make(chan domain.StreamEvent, 1)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -170,7 +169,7 @@ func TestBatchMiddleware_CancelDrainsBufferedEvents(t *testing.T) {
 		}
 	}
 
-	cancel()
+	gen.Retire()
 
 	select {
 	case e := <-got:
@@ -191,8 +190,8 @@ func TestBatchMiddleware_CancelDrainsBufferedEvents(t *testing.T) {
 // hot-swap or shutdown neither drops them nor errors them back to the source.
 func TestBatchMiddleware_PassesThroughAfterCancel(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 10, FlushInterval: "1h"}
-	ctx, cancel := context.WithCancel(context.Background())
-	batch := mustBatch(t, ctx, cfg)
+	gen := newGeneration()
+	batch := mustBatch(t, gen, cfg)
 
 	forwarded := make(chan domain.StreamEvent, 1)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -200,7 +199,7 @@ func TestBatchMiddleware_PassesThroughAfterCancel(t *testing.T) {
 		return nil
 	})
 
-	cancel()
+	gen.Retire()
 	// Give the worker a moment to observe cancellation and exit.
 	time.Sleep(50 * time.Millisecond)
 
@@ -222,12 +221,17 @@ func TestBatchMiddleware_PassesThroughAfterCancel(t *testing.T) {
 // released with its event forwarded, not failed.
 func TestBatchMiddleware_BlockedSendPassesThroughOnCancel(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 1, FlushInterval: "1h"}
-	ctx, cancel := context.WithCancel(context.Background())
+	gen := newGeneration()
 
 	release := make(chan struct{})
-	batch := mustBatch(t, ctx, cfg)
+	batch := mustBatch(t, gen, cfg)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
-		<-release // wedge the worker so the buffer stays full
+		// Wedge only the worker's flush, not the unbatched fallthrough: the
+		// point of the test is that a parked publisher is released onto that
+		// fallthrough while the worker is still stuck.
+		if strings.HasSuffix(e.Type, "_batch") {
+			<-release
+		}
 		return nil
 	})
 
@@ -244,8 +248,13 @@ func TestBatchMiddleware_BlockedSendPassesThroughOnCancel(t *testing.T) {
 	go func() { errCh <- handler("topic", evt) }()
 
 	time.Sleep(50 * time.Millisecond) // let the send block
-	cancel()
-	close(release)
+
+	// Retire blocks until the worker has drained, and the worker is wedged in
+	// flush until release is closed. Run it concurrently: releasing the parked
+	// publisher is the first thing retirement does, and it must not be
+	// contingent on the worker finishing.
+	retired := make(chan struct{})
+	go func() { defer close(retired); gen.Retire() }()
 
 	select {
 	case err := <-errCh:
@@ -253,7 +262,14 @@ func TestBatchMiddleware_BlockedSendPassesThroughOnCancel(t *testing.T) {
 			t.Errorf("blocked publisher returned %v, want nil", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("blocked publisher was not released after cancel")
+		t.Fatal("blocked publisher was not released by retirement")
+	}
+
+	close(release)
+	select {
+	case <-retired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Retire did not return after the worker drained")
 	}
 }
 
@@ -263,7 +279,7 @@ func TestBatchMiddleware_BlockedSendPassesThroughOnCancel(t *testing.T) {
 // as a malformed event.
 func TestBatchMiddleware_MarshalFailureIsReported(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 1, FlushInterval: "1h"}
-	batch := mustBatch(t, context.Background(), cfg)
+	batch := mustBatch(t, newGeneration(), cfg)
 
 	published := make(chan domain.StreamEvent, 1)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -306,8 +322,8 @@ func TestBatchMiddleware_MarshalFailureIsReported(t *testing.T) {
 func TestBatchMiddleware_DrainRespectsMaxBatchSize(t *testing.T) {
 	const maxSize = 2
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: maxSize, FlushInterval: "1h"}
-	ctx, cancel := context.WithCancel(context.Background())
-	batch := mustBatch(t, ctx, cfg)
+	gen := newGeneration()
+	batch := mustBatch(t, gen, cfg)
 
 	release := make(chan struct{})
 	flushed := make(chan domain.StreamEvent, 4)
@@ -334,8 +350,15 @@ func TestBatchMiddleware_DrainRespectsMaxBatchSize(t *testing.T) {
 	send(3)
 	send(4)
 
-	cancel()
+	// Retire waits for the worker, and the worker is wedged in its first flush,
+	// so the two have to overlap. Waiting for Done before releasing keeps the
+	// order deterministic: retirement has begun — nothing more can enter the
+	// buffer — and only then does the worker proceed to its final drain.
+	retired := make(chan struct{})
+	go func() { defer close(retired); gen.Retire() }()
+	<-gen.Done()
 	close(release)
+	<-retired
 
 	var total int
 	for total < 4 {
@@ -359,7 +382,7 @@ func TestBatchMiddleware_DrainRespectsMaxBatchSize(t *testing.T) {
 // rather than producing a zero-capacity channel.
 func TestBatchMiddleware_DefaultMaxBatchSize(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 0, FlushInterval: "50ms"}
-	batch := mustBatch(t, context.Background(), cfg)
+	batch := mustBatch(t, newGeneration(), cfg)
 
 	flushed := make(chan domain.StreamEvent, 1)
 	handler := batch(func(topic string, e domain.StreamEvent) error {
@@ -383,7 +406,7 @@ func TestBatchMiddleware_DefaultMaxBatchSize(t *testing.T) {
 // and cleared, and subsequent batches still flow.
 func TestBatchMiddleware_FlushErrorDoesNotStallWorker(t *testing.T) {
 	cfg := &domain.BatchConfig{Enabled: true, MaxBatchSize: 1, FlushInterval: "1h"}
-	batch := mustBatch(t, context.Background(), cfg)
+	batch := mustBatch(t, newGeneration(), cfg)
 
 	seen := make(chan domain.StreamEvent, 2)
 	var calls atomic.Int32

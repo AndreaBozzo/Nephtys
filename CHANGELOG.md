@@ -8,6 +8,13 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+### Fixed
+- A pipeline hot-swap can no longer strand an event. Retiring a pipeline generation cancelled a context while publishers reached that generation through an unsynchronised atomic pointer, so retirement and use were not ordered against each other. A publisher that passed the batch middleware's cancellation check microseconds before the swap could land its event in the buffer *after* the worker's final drain had already returned, where nothing would ever pick it up. The event was never flushed and never reported — it failed no publish and incremented no counter, which is why the loss was silent. #56 made the swap lossless for every case reachable in practice; this closes the residual window rather than narrowing it. (#57)
+
+  A generation is now a first-class object that owns its own retirement, and retiring one is a three-step handshake instead of a cancellation: it stops accepting into buffers (releasing any publisher parked on a full one), waits for the publishers already inside it and seals at that moment, and only then releases its buffering middlewares to drain. `Retire` returns once they have, so a completed swap means every event the outgoing generation accepted has reached the broker. The same handshake runs on stream removal and shutdown, where it also closes a smaller gap: a buffered batch could previously lose a race with process exit.
+
+  The guarantee costs one read-lock pair per event on the publish path — roughly 24 ns with no additional allocations, about 1% of a filter→transform→dedup→enrich chain (`make bench`, `BenchmarkGenerationOverhead`). `#16`'s `overflow_policy` will revisit the same send path; the buffer semantics are now stated in one place for it to build on.
+
 ### Changed
 - **Breaking (configuration):** stream configuration is now validated authoritatively, so configs a previous version accepted may be rejected. `--config-check` previously shared neither the decoder nor the full rule set of `POST /v1/streams`: an empty `id` and an unsupported `kind` such as `"kafka"` both exited 0 from the CLI while the API refused them, and `pipeline` was never inspected at all. Both paths now go through one decoder and one validator. What changed in what is accepted (#55):
 
