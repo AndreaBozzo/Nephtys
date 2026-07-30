@@ -28,21 +28,21 @@ import (
 // and the effective window shrinks below the configured TTL. Operators
 // with high-cardinality streams should size cfg.CacheSize for at least
 // one full TTL window of expected unique payloads.
-func NewDedup(streamID string, cfg *domain.DedupConfig) Middleware {
+// It returns an error rather than falling back to defaults when cfg states a
+// TTL or cache size it cannot honour — see resolveDuration.
+func NewDedup(streamID string, cfg *domain.DedupConfig) (Middleware, error) {
 	if cfg == nil || !cfg.Enabled {
-		return nil
+		return nil, nil
 	}
 
-	ttl := 1 * time.Minute
-	if cfg.TTL != "" {
-		if parsed, err := time.ParseDuration(cfg.TTL); err == nil {
-			ttl = parsed
-		}
+	ttl, err := resolveDuration("pipeline.dedup.ttl", cfg.TTL, defaultDedupTTL)
+	if err != nil {
+		return nil, err
 	}
 
-	cacheSize := cfg.CacheSize
-	if cacheSize <= 0 {
-		cacheSize = 1000
+	cacheSize, err := resolveCount("pipeline.dedup.cache_size", cfg.CacheSize, defaultDedupCacheSize, maxDedupCacheSize)
+	if err != nil {
+		return nil, err
 	}
 	telemetry.DedupCacheCapacity.WithLabelValues(streamID).Set(float64(cacheSize))
 
@@ -100,5 +100,5 @@ func NewDedup(streamID string, cfg *domain.DedupConfig) Middleware {
 			telemetry.DedupCacheSize.WithLabelValues(streamID).Set(float64(len(cache)))
 			return next(topic, event)
 		}
-	}
+	}, nil
 }

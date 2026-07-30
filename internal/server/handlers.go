@@ -1,17 +1,10 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
-	"net/url"
-	"regexp"
-	"strconv"
 
-	"nephtys/internal/domain"
+	"nephtys/internal/pipeline"
 )
-
-// topicPattern matches NATS publish-safe subject characters (no wildcards).
-var topicPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 // handleHealth responds with broker connectivity status.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -37,23 +30,15 @@ func (s *Server) handleListStreams(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateStream registers and starts a new stream source.
 func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
-	var cfg domain.StreamSourceConfig
-	if err := readJSON(w, r, &cfg); err != nil {
+	cfg, err := DecodeStreamConfig(limitBody(w, r))
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	if cfg.ID == "" || cfg.Kind == "" || cfg.Topic == "" {
-		writeError(w, http.StatusBadRequest, "id, kind, and topic are required")
-		return
-	}
-
-	// URL is required for all except webhook and grpc
-	if cfg.Kind != "webhook" && cfg.Kind != "grpc" && cfg.URL == "" {
-		writeError(w, http.StatusBadRequest, "url is required for kind "+cfg.Kind)
-		return
-	}
-
+	// One validator for every entry point: required fields, connector block, and
+	// pipeline. `--config-check` calls the same function, so a config CI accepts
+	// is one this handler accepts.
 	if err := validateStreamConfig(cfg); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -103,8 +88,15 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var pipelineCfg domain.PipelineConfig
-	if err := readJSON(w, r, &pipelineCfg); err != nil {
+	pipelineCfg, err := DecodePipelineConfig(limitBody(w, r))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// The endpoint that changes behavior on a live stream gets the same
+	// validation as the one that creates it. It previously had none.
+	if err := pipeline.ValidateConfig(&pipelineCfg); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -125,71 +117,4 @@ func boolToStatus(b bool) string {
 		return "connected"
 	}
 	return "disconnected"
-}
-
-// ValidateStreamConfig performs input validation on a stream configuration.
-// Exposed for use by `nephtys --config-check`.
-func ValidateStreamConfig(cfg domain.StreamSourceConfig) error {
-	return validateStreamConfig(cfg)
-}
-
-// validateStreamConfig performs input validation on a stream configuration.
-func validateStreamConfig(cfg domain.StreamSourceConfig) error {
-	if !topicPattern.MatchString(cfg.Topic) {
-		return fmt.Errorf("invalid topic %q: must match [a-zA-Z0-9._-]+", cfg.Topic)
-	}
-
-	// URL validation for connectors that require one
-	if cfg.Kind != "webhook" && cfg.Kind != "grpc" {
-		u, err := url.Parse(cfg.URL)
-		if err != nil {
-			return fmt.Errorf("invalid url: %w", err)
-		}
-		if u.Host == "" {
-			return fmt.Errorf("url must include a host")
-		}
-		switch cfg.Kind {
-		case "websocket":
-			if u.Scheme != "ws" && u.Scheme != "wss" {
-				return fmt.Errorf("websocket url must use ws:// or wss:// scheme")
-			}
-		case "rest_poller", "sse":
-			if u.Scheme != "http" && u.Scheme != "https" {
-				return fmt.Errorf("%s url must use http:// or https:// scheme", cfg.Kind)
-			}
-		}
-	}
-
-	if cfg.Websocket != nil {
-		for i, msg := range cfg.Websocket.OnConnectSend {
-			if msg == "" {
-				return fmt.Errorf("websocket on_connect_send[%d] must not be empty", i)
-			}
-		}
-	}
-
-	// Port validation for webhook and gRPC
-	if cfg.Webhook != nil && cfg.Webhook.Port != "" {
-		if err := validatePort(cfg.Webhook.Port); err != nil {
-			return fmt.Errorf("webhook port: %w", err)
-		}
-	}
-	if cfg.Grpc != nil && cfg.Grpc.Port != "" {
-		if err := validatePort(cfg.Grpc.Port); err != nil {
-			return fmt.Errorf("grpc port: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func validatePort(s string) error {
-	port, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("%q is not a valid port number", s)
-	}
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("port %d out of range (1-65535)", port)
-	}
-	return nil
 }

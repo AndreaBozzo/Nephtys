@@ -4,7 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -84,14 +84,10 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func readJSON(w http.ResponseWriter, r *http.Request, v any) error {
-	// Prevent DoS: limit incoming request body to 1MB
-	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
-	defer func() {
-		_ = r.Body.Close()
-	}()
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		return fmt.Errorf("invalid JSON: %w", err)
-	}
-	return nil
+// limitBody caps how much of a request body a decoder may read. Decoding itself
+// lives in DecodeStreamConfig / DecodePipelineConfig so the REST handlers and
+// `--config-check` share one set of rules about what a valid document is.
+func limitBody(w http.ResponseWriter, r *http.Request) io.Reader {
+	// Prevent DoS: limit incoming request body to 1MB. Stream configs are tiny.
+	return http.MaxBytesReader(w, r.Body, 1*1024*1024)
 }

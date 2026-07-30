@@ -80,7 +80,16 @@ func (m *StreamManager) Register(source connector.StreamSource, cfg domain.Strea
 		}
 	}
 
-	m.startSourceLocked(id, source, cfg)
+	if err := m.startSourceLocked(id, source, cfg); err != nil {
+		// Nothing was started, so leave no persisted config behind claiming
+		// otherwise.
+		if m.store != nil {
+			if delErr := m.store.Delete(id); delErr != nil {
+				m.logger.Warn("Failed to delete config for unstartable stream", "id", id, "error", delErr)
+			}
+		}
+		return err
+	}
 	return nil
 }
 
@@ -151,17 +160,31 @@ func (m *StreamManager) Restore() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	restored := 0
 	for _, cfg := range configs {
+		// Re-validate on the way in. The KV bucket holds whatever the version
+		// that wrote it accepted, so without this check restore is the one path
+		// that can start a stream from configuration the current validator
+		// rejects — the config contract would hold for new streams and quietly
+		// not hold for surviving ones.
+		if err := validateStreamConfig(cfg); err != nil {
+			m.logger.Warn("Skipping invalid persisted stream", "id", cfg.ID, "error", err)
+			continue
+		}
 		source, err := sourceFromConfig(cfg)
 		if err != nil {
 			m.logger.Warn("Skipping unrestorable stream", "id", cfg.ID, "error", err)
 			continue
 		}
-		m.startSourceLocked(cfg.ID, source, cfg)
+		if err := m.startSourceLocked(cfg.ID, source, cfg); err != nil {
+			m.logger.Warn("Skipping unstartable stream", "id", cfg.ID, "error", err)
+			continue
+		}
+		restored++
 		m.logger.Info("Stream restored", "id", cfg.ID, "kind", cfg.Kind)
 	}
 
-	m.logger.Info("Restore complete", "count", len(configs))
+	m.logger.Info("Restore complete", "restored", restored, "persisted", len(configs))
 	return nil
 }
 
@@ -184,7 +207,13 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 	// touches Prometheus collectors, and no other manager operation should
 	// queue behind that.
 	pipeCtx, pipeCancel := context.WithCancel(context.Background())
-	pipe := pipeline.BuildFromConfig(pipeCtx, id, pipelineCfg)
+	pipe, err := pipeline.BuildFromConfig(pipeCtx, id, pipelineCfg)
+	if err != nil {
+		// The running generation is untouched: nothing has been swapped yet, so
+		// a rejected update leaves the stream on its previous pipeline.
+		pipeCancel()
+		return fmt.Errorf("build pipeline: %w", err)
+	}
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
 		telemetry.EventsPublished.WithLabelValues(id).Inc()
 		telemetry.BytesPublished.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
@@ -298,13 +327,21 @@ func (m *StreamManager) StopAll() {
 }
 
 // startSourceLocked launches a source in a goroutine. Must be called with mu held.
-func (m *StreamManager) startSourceLocked(id string, source connector.StreamSource, cfg domain.StreamSourceConfig) {
+// It fails without registering anything if the stream's pipeline cannot be
+// built, so a stream never runs with a pipeline other than the one configured.
+func (m *StreamManager) startSourceLocked(id string, source connector.StreamSource, cfg domain.StreamSourceConfig) error {
+	// Pipeline gets its own context so batch goroutines can be cancelled independently
+	pipeCtx, pipeCancel := context.WithCancel(context.Background())
+
+	pipe, err := pipeline.BuildFromConfig(pipeCtx, id, cfg.Pipeline)
+	if err != nil {
+		pipeCancel()
+		return fmt.Errorf("build pipeline: %w", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	stateDone := make(chan struct{})
-
-	// Pipeline gets its own context so batch goroutines can be cancelled independently
-	pipeCtx, pipeCancel := context.WithCancel(context.Background())
 
 	m.sources[id] = source
 	m.cancels[id] = cancel
@@ -314,8 +351,6 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	runtime := &streamRuntime{}
 	m.runtimes[id] = runtime
 
-	// Build initial handler
-	pipe := pipeline.BuildFromConfig(pipeCtx, id, cfg.Pipeline)
 	handler := pipe.Execute(func(topic string, event domain.StreamEvent) error {
 		telemetry.EventsPublished.WithLabelValues(id).Inc()
 		telemetry.BytesPublished.WithLabelValues(id).Add(float64(eventPayloadSize(event)))
@@ -351,6 +386,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	}()
 
 	m.logger.Info("Source registered and started", "id", id)
+	return nil
 }
 
 func trackSourceState(ctx context.Context, id string, source connector.StreamSource) {

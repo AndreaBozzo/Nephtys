@@ -12,21 +12,22 @@ import (
 // NewBatch creates a middleware that buffers events and flushes them
 // periodically or when a maximum size is reached.
 // The provided context controls the lifetime of the background worker goroutine.
-func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
+//
+// It returns an error rather than falling back to defaults when cfg states a
+// flush interval or batch size it cannot honour — see resolveDuration.
+func NewBatch(ctx context.Context, cfg *domain.BatchConfig) (Middleware, error) {
 	if cfg == nil || !cfg.Enabled {
-		return nil
+		return nil, nil
 	}
 
-	maxSize := cfg.MaxBatchSize
-	if maxSize <= 0 {
-		maxSize = 100
+	maxSize, err := resolveCount("pipeline.batch.max_batch_size", cfg.MaxBatchSize, defaultMaxBatchSize, maxBatchSize)
+	if err != nil {
+		return nil, err
 	}
 
-	flushInterval := 1 * time.Second
-	if cfg.FlushInterval != "" {
-		if parsed, err := time.ParseDuration(cfg.FlushInterval); err == nil {
-			flushInterval = parsed
-		}
+	flushInterval, err := resolveDuration("pipeline.batch.flush_interval", cfg.FlushInterval, defaultFlushInterval)
+	if err != nil {
+		return nil, err
 	}
 
 	type topicEvent struct {
@@ -163,5 +164,5 @@ func NewBatch(ctx context.Context, cfg *domain.BatchConfig) Middleware {
 				return next(topic, event)
 			}
 		}
-	}
+	}, nil
 }

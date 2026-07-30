@@ -193,6 +193,74 @@ func TestRestore_WithStore(t *testing.T) {
 	manager.StopAll()
 }
 
+// TestRestore_SkipsPersistedConfigTheValidatorRejects covers the one path that
+// can start a stream without passing through the API's validation. The KV bucket
+// holds whatever the version that wrote it accepted, so a config stored before
+// the configuration contract tightened must be refused on the way back in — not
+// started with a silently reinterpreted pipeline — while its valid siblings
+// still restore.
+func TestRestore_SkipsPersistedConfigTheValidatorRejects(t *testing.T) {
+	srv := startTestNATS(t)
+	brk := connectBroker(t, srv)
+
+	if err := brk.EnsureStream("NEPHTYS", []string{"nephtys.stream.>"}); err != nil {
+		t.Fatalf("ensure stream: %v", err)
+	}
+
+	st, err := store.NewStreamStore(brk.JetStream())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	// Written by a laxer version: "5 minutes" is not a Go duration, and used to
+	// fall back to the 1m default instead of being rejected. Building the
+	// pipeline also rejects this one, so it alone would not prove the restore
+	// path validates.
+	stalePipeline := domain.StreamSourceConfig{
+		ID:      "stale-pipeline",
+		Kind:    "webhook",
+		Topic:   "nephtys.stream.stale.pipeline",
+		Webhook: &domain.WebhookConfig{Port: "19877", Path: "/hook"},
+		Pipeline: &domain.PipelineConfig{
+			Dedup: &domain.DedupConfig{Enabled: true, TTL: "5 minutes"},
+		},
+	}
+	// Invalid for a reason no pipeline build can see: the port is out of range,
+	// so without validation here the connector starts and fails asynchronously
+	// while the stream reports as registered.
+	staleConnector := domain.StreamSourceConfig{
+		ID:      "stale-connector",
+		Kind:    "webhook",
+		Topic:   "nephtys.stream.stale.connector",
+		Webhook: &domain.WebhookConfig{Port: "99999", Path: "/hook"},
+	}
+	good := domain.StreamSourceConfig{
+		ID:      "sound-config",
+		Kind:    "webhook",
+		Topic:   "nephtys.stream.sound",
+		Webhook: &domain.WebhookConfig{Port: "19878", Path: "/hook"},
+	}
+	for _, cfg := range []domain.StreamSourceConfig{stalePipeline, staleConnector, good} {
+		if err := st.Put(cfg); err != nil {
+			t.Fatalf("store put %s: %v", cfg.ID, err)
+		}
+	}
+
+	manager := NewStreamManager(brk, st)
+	if err := manager.Restore(); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	t.Cleanup(manager.StopAll)
+
+	var ids []string
+	for _, s := range manager.List() {
+		ids = append(ids, s.ID)
+	}
+	if len(ids) != 1 || ids[0] != good.ID {
+		t.Errorf("restored %v, want only %q — the invalid config was started anyway", ids, good.ID)
+	}
+}
+
 func TestRestore_NilStore(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
 	if err := manager.Restore(); err != nil {
