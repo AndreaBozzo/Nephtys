@@ -372,7 +372,7 @@ The same handshake runs on shutdown and on stream removal, so a buffered batch i
 
 **A pipeline update is durable.** `200 OK` means the replacement is both running and stored, so a restart resumes the stream on the updated pipeline rather than the one it was registered with. The stored config is written *before* the swap, under the same lock that guards registration and removal, which is what keeps the running pipeline and the stored one from describing different streams:
 
-- If the config store rejects the write, the swap does not happen. The stream keeps running the pipeline the store still describes and the endpoint answers `503 Service Unavailable` — the request was valid and the stream exists, so retrying is the right response.
+- If the config store rejects the write, the swap does not happen. The stream keeps running its previous pipeline and the endpoint answers `503 Service Unavailable` — the request was valid and the stream exists, so retrying is the right response. See [Persistence](#persistence) for what a `503` does and does not promise about the store itself.
 - The update replaces the `pipeline` block only. `kind`, `url`, `topic` and the connector block are carried over from the registered config untouched.
 - There is no ephemeral mode. A pipeline that should not outlive the process does not currently have a way to say so; if you need one, open an issue rather than relying on the update being forgotten.
 
@@ -382,7 +382,8 @@ Nephtys uses NATS JetStream for both event durability and configuration state �
 
 - **Event payloads** are written to JetStream with a 72h default retention (configurable on the broker).
 - **Stream configurations** are stored in a JetStream KV bucket and reloaded on startup, so registered streams survive restarts. The stored config is the *effective* one: `POST /v1/streams` writes it, and every accepted `PUT /v1/streams/{id}/pipeline` amends it, so what restarts is what was last running. A persisted config the current validator rejects is skipped with a warning rather than started.
-- **A management call that cannot be persisted does not take effect.** `POST /v1/streams` and `PUT /v1/streams/{id}/pipeline` both answer `503` rather than applying a change the store did not accept; `DELETE` stops the stream regardless, since a stream that is no longer running must not be resurrected by a restart.
+- **A management call that cannot be persisted does not take effect.** `POST /v1/streams`, `PUT /v1/streams/{id}/pipeline` and `DELETE /v1/streams/{id}` all answer `503` rather than applying a change the store did not accept. For `DELETE` that means the stream is left *running*: tearing it down while its config survives would bring it back at the next restart, which is the same divergence in the other direction.
+- **`503` means the change was not applied locally, not that the store is untouched.** A JetStream request that times out has an unknown outcome — it may still be applied after the client has given up, in which case the next restart acts on it. Nephtys does not currently reconcile that; it is tracked in [#65](https://github.com/AndreaBozzo/Nephtys/issues/65). Treat a `503` as "retry, then verify with `GET /v1/streams`".
 
 ## Development
 
