@@ -1,0 +1,24 @@
+# Line endings are LF in the repository *and* in the working tree, on every
+# platform.
+#
+# Without this, `core.autocrlf=true` — the usual Windows default, and what a
+# fresh Git for Windows install sets — checks every text file out with CRLF
+# while storing LF. The repository stays clean, but the working copy no longer
+# matches what the tools expect: `gofmt -l .` reports all 56 Go files as
+# unformatted, so the one command that tells you whether your code is formatted
+# tells you nothing, and `make fmt` rewrites every file in the tree. CLAUDE.md
+# documented that as a Windows quirk to work around; it is a setting, and this
+# is the setting.
+#
+# text=auto still lets Git detect binaries rather than corrupting them.
+* text=auto eol=lf
+
+# Belt and braces for the two cases where a stray CR is not cosmetic: a CRLF
+# shebang makes the kernel look for an interpreter whose name ends in \r, and a
+# CRLF Dockerfile RUN line carries the CR into the container's shell.
+*.sh  text eol=lf
+Dockerfile text eol=lf
+
+# Never normalize. text=auto would classify this correctly on its own; saying
+# so explicitly means a future rule cannot accidentally capture it.
+*.png binary
