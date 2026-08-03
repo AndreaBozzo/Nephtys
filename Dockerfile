@@ -4,10 +4,14 @@
 # leg of a multi-arch buildx run executes the entire Go toolchain under QEMU.
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
-# Supplied automatically by buildx. Defaulted so a plain `docker build` still
-# produces a working native image.
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# Supplied automatically by BuildKit, and deliberately left without defaults.
+# These are *predefined* platform args: giving one a default makes the default
+# win, so `ARG TARGETARCH=amd64` silently cross-compiled every leg of a
+# multi-arch build to amd64 while buildx still labelled one of them arm64. A
+# plain `docker build` needs no default either — BuildKit fills these in from
+# the host platform.
+ARG TARGETOS
+ARG TARGETARCH
 
 # Stamped into the binary so `nephtys --version` reports a release rather than a
 # commit hash. The runtime fallback in main.go reads VCS info from the build,
