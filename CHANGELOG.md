@@ -9,6 +9,25 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ## [Unreleased]
 
 ### Fixed
+- **Breaking (API status codes):** a pipeline update is now durable, and a management call that cannot be persisted no longer reports success. `PUT /v1/streams/{id}/pipeline` swapped the live handler and deliberately left the JetStream KV copy of the config alone, so a change the API had answered `200 OK` for was silently reverted by the next restart — the stream came back on the pipeline it was registered with, with nothing recording that an update had ever been accepted. (#28)
+
+  The manager now keeps each stream's *effective* config — the registered one, amended by every accepted pipeline update — and writes it before the swap, under the same lock that guards registration and removal. Ordering it that way is what makes the two states inseparable rather than merely usually equal: if the store rejects the write, no swap happens, the stream keeps running the pipeline the store still describes, and the caller is told. Only the `pipeline` block is replaced; `kind`, `url`, `topic` and the connector block are carried over untouched. There is no ephemeral mode — a pipeline update means the same thing whether or not the process survives the hour.
+
+  `DELETE /v1/streams/{id}` had the same divergence pointing the other way: the config delete happened last and a failure was only logged, so a removal that reported `200 OK` could be undone by a restart bringing the stream back. The delete now happens before any teardown, so a store that refuses it leaves the stream running rather than half-removed.
+
+  What changed in what you get back:
+
+  | Case | Before | After |
+  | --- | --- | --- |
+  | `POST /v1/streams` whose config cannot be persisted | `409 Conflict` | `503 Service Unavailable` |
+  | `PUT .../pipeline` whose config cannot be persisted | `200 OK`, reverted on restart | `503 Service Unavailable`, not applied |
+  | `DELETE /v1/streams/{id}` whose config cannot be deleted | `200 OK`, stream returns on restart | `503 Service Unavailable`, stream still running |
+  | duplicate stream id on `POST` | `409 Conflict` | `409 Conflict` (unchanged) |
+  | unknown stream id on `PUT`/`DELETE` | `404 Not Found` | `404 Not Found` (unchanged) |
+
+  `409` previously covered both a duplicate id and a store that would not accept the write, which left a client unable to tell "you already have this stream" from "try again". A caller that treats any non-2xx as fatal is unaffected; one that branches on the status should treat `503` as retryable. No response body field changed.
+
+  One limit is worth stating: `503` means the change was not applied *locally*, not that the store is untouched. A JetStream request that times out has an unknown outcome and may be applied after the client has given up — verified by hand against a broker restart, where a `503`'d `DELETE` landed anyway once NATS returned. Reconciling that is #65.
 - A pipeline hot-swap can no longer strand an event. Retiring a pipeline generation cancelled a context while publishers reached that generation through an unsynchronised atomic pointer, so retirement and use were not ordered against each other. A publisher that passed the batch middleware's cancellation check microseconds before the swap could land its event in the buffer *after* the worker's final drain had already returned, where nothing would ever pick it up. The event was never flushed and never reported — it failed no publish and incremented no counter, which is why the loss was silent. #56 made the swap lossless for every case reachable in practice; this closes the residual window rather than narrowing it. (#57)
 
   A generation is now a first-class object that owns its own retirement, and retiring one is a three-step handshake instead of a cancellation: it stops accepting into buffers (releasing any publisher parked on a full one), waits for the publishers already inside it and seals at that moment, and only then releases its buffering middlewares to drain. `Retire` returns once they have, so a completed swap means every event the outgoing generation accepted has reached the broker. The same handshake runs on stream removal and shutdown, where it also closes a smaller gap: a buffered batch could previously lose a race with process exit.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -16,6 +17,20 @@ import (
 	"nephtys/internal/telemetry"
 )
 
+// configStore is the persistence surface the manager depends on.
+// store.StreamStore is the only implementation; the indirection exists so the
+// paths that have to behave correctly when persistence *fails* can be tested
+// without breaking a live JetStream.
+type configStore interface {
+	Put(cfg domain.StreamSourceConfig) error
+	Delete(id string) error
+	List() ([]domain.StreamSourceConfig, error)
+}
+
+// compile-time assertion that the production store satisfies the interface the
+// manager declares.
+var _ configStore = (*store.StreamStore)(nil)
+
 // StreamManager tracks running stream sources and manages their lifecycle.
 // It persists stream configurations to a JetStream KV store so streams
 // survive restarts.
@@ -29,21 +44,28 @@ type StreamManager struct {
 	// it displaces is retired, which is what makes the handover lossless.
 	generations map[string]*atomic.Pointer[pipeline.Generation]
 
+	// configs holds the *effective* configuration of each running stream: the
+	// one it was registered with, amended by every accepted pipeline update.
+	// It is what gets persisted, so it has to track the running generation
+	// rather than the registration-time config.
+	configs map[string]domain.StreamSourceConfig
+
 	cancels    map[string]context.CancelFunc
 	dones      map[string]chan struct{}
 	stateDones map[string]chan struct{}
 	runtimes   map[string]*streamRuntime
 	broker     *broker.Broker
-	store      *store.StreamStore // nil in tests
+	store      configStore // nil in tests
 	logger     *slog.Logger
 }
 
 // NewStreamManager creates a manager backed by the given broker and store.
 // The store may be nil (e.g. in unit tests), in which case persistence is disabled.
-func NewStreamManager(brk *broker.Broker, st *store.StreamStore) *StreamManager {
+func NewStreamManager(brk *broker.Broker, st configStore) *StreamManager {
 	return &StreamManager{
 		sources:     make(map[string]connector.StreamSource),
 		generations: make(map[string]*atomic.Pointer[pipeline.Generation]),
+		configs:     make(map[string]domain.StreamSourceConfig),
 		cancels:     make(map[string]context.CancelFunc),
 		dones:       make(map[string]chan struct{}),
 		stateDones:  make(map[string]chan struct{}),
@@ -74,7 +96,7 @@ func (m *StreamManager) Register(source connector.StreamSource, cfg domain.Strea
 
 	id := source.ID()
 	if _, exists := m.sources[id]; exists {
-		return fmt.Errorf("source %q already registered", id)
+		return fmt.Errorf("source %q: %w", id, ErrStreamExists)
 	}
 
 	// Persist config for restart recovery
@@ -104,7 +126,20 @@ func (m *StreamManager) Remove(id string) error {
 
 	source, exists := m.sources[id]
 	if !exists {
-		return fmt.Errorf("source %q not found", id)
+		return fmt.Errorf("source %q: %w", id, ErrStreamNotFound)
+	}
+
+	// Drop the persisted config before tearing anything down. A stream that is
+	// stopped while its config survives comes back on the next restart — the
+	// same runtime/stored divergence UpdatePipeline avoids by persisting before
+	// it swaps, in the other direction. Nothing has been stopped at this point,
+	// so a store that refuses the delete leaves the stream running and the
+	// caller told why, rather than leaving a removal that silently un-removes
+	// itself later.
+	if m.store != nil {
+		if err := m.store.Delete(id); err != nil {
+			return fmt.Errorf("delete persisted config for %q: %w", id, err)
+		}
 	}
 
 	source.Stop()
@@ -129,18 +164,12 @@ func (m *StreamManager) Remove(id string) error {
 
 	delete(m.sources, id)
 	delete(m.generations, id)
+	delete(m.configs, id)
 	delete(m.cancels, id)
 	delete(m.dones, id)
 	delete(m.stateDones, id)
 	delete(m.runtimes, id)
 	telemetry.DeleteStreamSeries(id)
-
-	// Remove persisted config
-	if m.store != nil {
-		if err := m.store.Delete(id); err != nil {
-			m.logger.Warn("Failed to delete persisted config", "id", id, "error", err)
-		}
-	}
 
 	m.logger.Info("Source removed", "id", id)
 	return nil
@@ -194,13 +223,30 @@ func (m *StreamManager) Restore() error {
 	return nil
 }
 
-// UpdatePipeline hot-swaps the pipeline config for a running stream.
+// Errors the manager returns for conditions the REST layer maps to a specific
+// status. Anything else is a failure to apply an otherwise valid request — a
+// dependency problem rather than the caller's fault — and maps to 503.
+var (
+	ErrStreamNotFound = errors.New("stream not found")
+	ErrStreamExists   = errors.New("stream already registered")
+)
+
+// UpdatePipeline hot-swaps the pipeline config for a running stream and makes
+// the change durable.
+//
+// Persistence is not an afterthought here: the stored config is updated before
+// the swap, under the lock that also guards registration and removal, so the
+// running pipeline and the stored one cannot disagree. A store that rejects the
+// write leaves the stream on the pipeline the store still describes, and the
+// caller is told the update did not take. The alternative ordering — swap, then
+// persist — would answer 200 for a change a restart silently reverts, which is
+// the defect this replaces.
 func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineConfig) error {
 	m.mu.RLock()
 	_, exists := m.generations[id]
 	m.mu.RUnlock()
 	if !exists {
-		return fmt.Errorf("source %q not found", id)
+		return fmt.Errorf("source %q: %w", id, ErrStreamNotFound)
 	}
 
 	// Build the replacement generation *before* retiring the running one.
@@ -228,9 +274,28 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 		m.mu.Unlock()
 		next.Retire()
 		telemetry.DeleteDedupSeries(id)
-		return fmt.Errorf("source %q not found", id)
+		return fmt.Errorf("source %q: %w", id, ErrStreamNotFound)
 	}
 
+	// The effective config is the registered one with its pipeline replaced.
+	// Everything else about the stream — kind, url, topic, connector block — is
+	// untouched by this endpoint and must survive the update.
+	updated := m.configs[id]
+	updated.Pipeline = pipelineCfg
+
+	if m.store != nil {
+		if err := m.store.Put(updated); err != nil {
+			// Nothing has been swapped, so the stream keeps running the
+			// pipeline the store still holds. Retire the replacement rather
+			// than leaking its worker goroutines and buffered events.
+			m.mu.Unlock()
+			next.Retire()
+			m.logger.Error("Pipeline update rejected: config not persisted", "id", id, "error", err)
+			return fmt.Errorf("persist pipeline for %q: %w", id, err)
+		}
+	}
+
+	m.configs[id] = updated
 	previous := ref.Swap(next)
 	m.mu.Unlock()
 
@@ -244,12 +309,7 @@ func (m *StreamManager) UpdatePipeline(id string, pipelineCfg *domain.PipelineCo
 	// then lets the batch worker drain — so an event accepted by the outgoing
 	// generation is flushed by it rather than stranded in a buffer nobody owns.
 	previous.Retire()
-	m.logger.Info("Stream pipeline hot-reloaded", "id", id)
-
-	// The swap is runtime-only: the JetStream KV copy of the config still
-	// describes the previous pipeline, so a restart silently reverts it.
-	// That contradicts the documented persistence contract and is tracked
-	// as a defect, not a design choice — see #28.
+	m.logger.Info("Stream pipeline hot-reloaded", "id", id, "persisted", m.store != nil)
 	return nil
 }
 
@@ -315,6 +375,7 @@ func (m *StreamManager) StopAll() {
 
 	m.sources = make(map[string]connector.StreamSource)
 	m.generations = make(map[string]*atomic.Pointer[pipeline.Generation])
+	m.configs = make(map[string]domain.StreamSourceConfig)
 	m.cancels = make(map[string]context.CancelFunc)
 	m.dones = make(map[string]chan struct{})
 	m.stateDones = make(map[string]chan struct{})
@@ -347,6 +408,7 @@ func (m *StreamManager) startSourceLocked(id string, source connector.StreamSour
 	stateDone := make(chan struct{})
 
 	m.sources[id] = source
+	m.configs[id] = cfg
 	m.cancels[id] = cancel
 	m.dones[id] = done
 	m.stateDones[id] = stateDone
