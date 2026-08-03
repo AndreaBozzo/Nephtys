@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
 	"nephtys/internal/pipeline"
@@ -51,7 +52,7 @@ func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.manager.Register(source, cfg); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		writeError(w, registerStatus(err), err.Error())
 		return
 	}
 
@@ -70,7 +71,13 @@ func (s *Server) handleDeleteStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.manager.Remove(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		if errors.Is(err, ErrStreamNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// The config store refused to drop the stream, so it was left running:
+		// removing it anyway would resurrect it on the next restart.
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 
@@ -102,7 +109,15 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.manager.UpdatePipeline(id, &pipelineCfg); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		if errors.Is(err, ErrStreamNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// The config store refused the write, so the update was not applied.
+		// 503 rather than 404 or 500: the request was well-formed and the
+		// stream exists — a dependency is unavailable, and retrying is the
+		// right response.
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 
@@ -110,6 +125,18 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		"id":     id,
 		"status": "pipeline updated",
 	})
+}
+
+// registerStatus maps a Register failure to a status. A duplicate id is a
+// conflict; a config store that would not accept the new stream is not — the
+// caller sent a valid request that a dependency prevented us from honouring.
+func registerStatus(err error) int {
+	switch {
+	case errors.Is(err, ErrStreamExists):
+		return http.StatusConflict
+	default:
+		return http.StatusServiceUnavailable
+	}
 }
 
 func boolToStatus(b bool) string {
