@@ -169,12 +169,15 @@ cd Nephtys
 # Start NATS with JetStream, Prometheus, and a pre-provisioned Grafana
 docker compose up -d
 
-# Configure environment
+# Configure environment — `make run` exports this; the binary itself reads
+# only the environment, so any other launcher needs these exported directly
 cp .env.example .env
 
 # Run Nephtys
 make run
 ```
+
+Set `NEPHTYS_ADMIN_TOKEN` in `.env` before the examples below. Leaving it unset is a valid production choice — it disables the stream-management routes entirely — but it means the first `POST /v1/streams` you try answers `403`, not `201`.
 
 ## Usage
 
