@@ -22,8 +22,8 @@ help: ## Show this help message
 build: ## Build the binary
 	go build -o $(BINARY) $(CMD)
 
-run: ## Run the application
-	go run $(CMD)
+run: ## Run the application, exporting .env first if it exists
+	@set -a; [ -f .env ] && . ./.env; set +a; go run $(CMD)
 
 test: ## Run all tests
 	go test -race -cover ./...
