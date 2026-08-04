@@ -11,7 +11,7 @@ make run          # run locally (needs NATS: make docker-up first)
 go run ./cmd/nephtys --config-check <file|->   # validate a stream config (exit 0/1)
 ```
 
-CI additionally runs `golangci-lint`. Note: on Windows working copies `gofmt -l` flags every file due to CRLF — trust CI, don't reformat wholesale.
+CI additionally runs `golangci-lint`. `.gitattributes` pins the working tree to LF on every platform, so `gofmt -l` is trustworthy on Windows too — it used to flag all 56 files under `core.autocrlf=true`. A checkout made before that file existed still has CRLF; `git rm -r --cached . && git reset --hard` on a clean tree fixes it.
 
 ## Architecture map
 
