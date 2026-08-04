@@ -42,17 +42,40 @@ jobs:
 
       # Proves the Dockerfile still builds for both targets. Nothing is pushed
       # and no registry credential exists in this job.
+      #
+      # The rootfs of each leg is exported so the next step can inspect the
+      # binary itself. `push: false` would only prove the build succeeded, and a
+      # build that cross-compiles to the wrong architecture succeeds.
       - name: Build both architectures
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: false
-          tags: nephtys:pr-${{ github.event.pull_request.number }}
+          outputs: type=local,dest=./rootfs
           build-args: |
             VERSION=pr-${{ github.event.pull_request.number }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Read the ELF
+      # header of each leg's binary. A multi-arch build labels its output by
+      # target platform whether or not the compiler agreed, so asking the
+      # manifest what architecture it is answers with the label, not the
+      # artifact.
+      - name: Each architecture must carry a binary for that architecture
+        run: |
+          set -euo pipefail
+          check() {
+            local dir="$1" want="$2" got
+            got="$(file -b "./rootfs/${dir}/nephtys")"
+            echo "${dir}: ${got}"
+            case "$got" in
+              *"$want"*) ;;
+              *) echo "::error::${dir} contains a binary that is not ${want}" >&2; exit 1 ;;
+            esac
+          }
+          check linux_amd64 x86-64
+          check linux_arm64 aarch64
 
   publish:
     name: Publish image
@@ -110,8 +133,11 @@ jobs:
           cache-to: type=gha,mode=max
 
       # Proves the published image actually runs before anyone pulls it. Only
-      # the native arch is executed here; the arm64 leg is verified by
-      # inspecting the manifest, since this runner cannot run arm64 binaries.
+      # the native arch is executed here, since this runner cannot run arm64
+      # binaries — but every leg's binary is checked for the architecture its
+      # manifest entry claims, which is a stronger statement than the manifest
+      # listing the platform. An arm64 entry carrying an amd64 binary satisfies
+      # the listing and fails on the device.
       - name: Smoke-test the published image
         run: |
           set -euo pipefail
@@ -120,6 +146,7 @@ jobs:
           docker pull "$tag"
           echo "--- version ---"
           docker run --rm "$tag" --version
+
           echo "--- manifest architectures ---"
           docker buildx imagetools inspect "$tag" \
             --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{"\n"}}{{end}}' \
@@ -127,3 +154,20 @@ jobs:
           for want in linux/amd64 linux/arm64; do
             grep -qx "$want" /tmp/arches || { echo "missing $want in manifest" >&2; exit 1; }
           done
+
+          echo "--- binary architecture per manifest entry ---"
+          check() {
+            local arch="$1" want="$2" cid got
+            docker pull --quiet --platform "linux/${arch}" "$tag" >/dev/null
+            cid="$(docker create --platform "linux/${arch}" "$tag")"
+            docker export "$cid" | tar -xO nephtys > "/tmp/nephtys-${arch}"
+            docker rm "$cid" >/dev/null
+            got="$(file -b "/tmp/nephtys-${arch}")"
+            echo "linux/${arch}: ${got}"
+            case "$got" in
+              *"$want"*) ;;
+              *) echo "::error::linux/${arch} entry contains a binary that is not ${want}" >&2; exit 1 ;;
+            esac
+          }
+          check amd64 x86-64
+          check arm64 aarch64
