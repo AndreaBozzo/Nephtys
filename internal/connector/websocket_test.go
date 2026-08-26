@@ -80,13 +80,31 @@ func wsURL(httpURL string) string {
 	return "ws" + strings.TrimPrefix(httpURL, "http")
 }
 
-func TestWebSocket_IDAndStatus(t *testing.T) {
+func TestWebSocket_IDAndOpen(t *testing.T) {
 	src := NewWebSocketSource("ws-id", "wss://x", "t", nil)
 	if src.ID() != "ws-id" {
 		t.Errorf("expected ws-id, got %s", src.ID())
 	}
-	if src.Status() != domain.StatusIdle {
-		t.Errorf("expected idle, got %s", src.Status())
+	// A websocket source holds no local resource, so admission is free and
+	// cannot fail: the dial belongs to the session.
+	if err := src.Open(context.Background()); err != nil {
+		t.Errorf("Open returned %v, want nil", err)
+	}
+	src.Close()
+}
+
+func TestWebSocket_RunReportsDialFailure(t *testing.T) {
+	// Port 0 is not connectable, so the dial fails without waiting for a
+	// network timeout.
+	src := NewWebSocketSource("ws-dead", "ws://127.0.0.1:0/ws", "t", nil)
+
+	ready := false
+	err := src.Run(context.Background(), func(string, domain.StreamEvent) error { return nil }, func() { ready = true })
+	if err == nil {
+		t.Fatal("Run against an unreachable endpoint returned nil")
+	}
+	if ready {
+		t.Error("Run reported ready despite failing to dial")
 	}
 }
 
@@ -105,7 +123,7 @@ func TestWebSocket_ReceivesMessages(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- source.Start(ctx, publish)
+		done <- source.Run(ctx, publish, func() {})
 	}()
 
 	// Wait for both messages
@@ -128,7 +146,6 @@ func TestWebSocket_ReceivesMessages(t *testing.T) {
 	}
 
 	cancel()
-	source.Stop()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -152,7 +169,7 @@ func TestWebSocket_InferBinanceMetadata(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- source.Start(ctx, publish)
+		done <- source.Run(ctx, publish, func() {})
 	}()
 
 	select {
@@ -171,7 +188,6 @@ func TestWebSocket_InferBinanceMetadata(t *testing.T) {
 	}
 
 	cancel()
-	source.Stop()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -198,7 +214,7 @@ func TestWebSocket_BinaryMessage(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- source.Start(ctx, publish)
+		done <- source.Run(ctx, publish, func() {})
 	}()
 
 	select {
@@ -217,7 +233,6 @@ func TestWebSocket_BinaryMessage(t *testing.T) {
 	}
 
 	cancel()
-	source.Stop()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -239,7 +254,7 @@ func TestWebSocket_NonJSONTextIsWrapped(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- source.Start(ctx, publish)
+		done <- source.Run(ctx, publish, func() {})
 	}()
 
 	select {
@@ -256,7 +271,6 @@ func TestWebSocket_NonJSONTextIsWrapped(t *testing.T) {
 	}
 
 	cancel()
-	source.Stop()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -309,15 +323,14 @@ func TestWebSocket_OnConnectSendResentOnReconnect(t *testing.T) {
 
 	publish := PublishFunc(func(topic string, event domain.StreamEvent) error { return nil })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- source.Start(ctx, publish)
-	}()
-
-	// Expect the frames in order on the first connection, then again after the
-	// server-initiated disconnect (reconnect backoff starts at 1s).
+	// Every session sends the frames after its handshake. Running the source
+	// twice is what a supervised restart does, so this asserts the guarantee
+	// the README makes — frames are replayed on reconnect — at the seam where
+	// the connector now owns it.
 	for round := 0; round < 2; round++ {
+		if err := source.Run(context.Background(), publish, func() {}); err == nil {
+			t.Fatalf("round %d: Run returned nil, want the session-ended error", round)
+		}
 		for i, want := range frames {
 			select {
 			case got := <-received:
@@ -328,14 +341,6 @@ func TestWebSocket_OnConnectSendResentOnReconnect(t *testing.T) {
 				t.Fatalf("timed out waiting for round %d frame %d", round, i)
 			}
 		}
-	}
-
-	cancel()
-	source.Stop()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for source to stop")
 	}
 }
 
@@ -396,11 +401,16 @@ func TestWebSocket_OnConnectSendRecoversFromAbortedConnection(t *testing.T) {
 
 	publish := PublishFunc(func(topic string, event domain.StreamEvent) error { return nil })
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// The first session dies in the post-connect send and reports it; the
+	// second delivers the frame. A supervisor turns that into a reconnect.
+	if err := source.Run(context.Background(), publish, func() {}); err == nil {
+		t.Fatal("Run over an aborted connection returned nil")
+	}
+
 	done := make(chan error, 1)
-	go func() {
-		done <- source.Start(ctx, publish)
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { done <- source.Run(ctx, publish, func() {}) }()
 
 	select {
 	case got := <-received:
@@ -415,7 +425,6 @@ func TestWebSocket_OnConnectSendRecoversFromAbortedConnection(t *testing.T) {
 	}
 
 	cancel()
-	source.Stop()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -423,7 +432,7 @@ func TestWebSocket_OnConnectSendRecoversFromAbortedConnection(t *testing.T) {
 	}
 }
 
-func TestWebSocket_Stop(t *testing.T) {
+func TestWebSocket_CancellationEndsSession(t *testing.T) {
 	// Server that stays open
 	srv := startWSServer(t, nil)
 
@@ -434,33 +443,29 @@ func TestWebSocket_Stop(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- source.Start(ctx, publish)
+		done <- source.Run(ctx, publish, func() { close(ready) })
 	}()
 
-	// Wait for connection to be established
-	deadline := time.After(2 * time.Second)
-	for source.Status() != domain.StatusRunning {
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for running status")
-		case <-time.After(10 * time.Millisecond):
-		}
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source never reported ready")
 	}
 
-	// Stop via cancel
 	cancel()
-	source.Stop()
 
 	select {
-	case <-done:
-		// OK
+	case err := <-done:
+		// A cancelled session is not a failed one: reporting an error here
+		// would spend one of the stream's restart attempts on an operator
+		// stopping it.
+		if err != nil {
+			t.Errorf("Run after cancellation returned %v, want nil", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for stop")
-	}
-
-	if source.Status() != domain.StatusStopped {
-		t.Errorf("expected stopped status, got %s", source.Status())
 	}
 }

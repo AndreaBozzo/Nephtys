@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,74 +17,61 @@ import (
 
 // mockSource implements connector.StreamSource for testing the manager
 // without real WebSocket connections or NATS.
+//
+// Its session blocks until the context is cancelled, which is what a real
+// connector does. A mock whose Run returned immediately would be restarted
+// immediately by the supervisor, so the manager tests would spend their time
+// racing a retry loop instead of testing what they claim to.
 type mockSource struct {
-	mu      sync.RWMutex
-	id      string
-	status  domain.SourceStatus
-	started bool
-	stopped bool
+	id string
+
+	opens    atomic.Int32
+	closes   atomic.Int32
+	sessions atomic.Int32
+
+	// publishes receives the publish func handed to each session, so a test
+	// can push events through the real instrumented path.
+	publishes chan connector.PublishFunc
+	stopped   chan struct{}
+	stopOnce  sync.Once
 }
 
-type publishingMockSource struct {
-	id      string
-	ready   chan connector.PublishFunc
-	stopped chan struct{}
-	status  atomicStatus
+func newMockSource(id string) *mockSource {
+	return &mockSource{
+		id:        id,
+		publishes: make(chan connector.PublishFunc, 4),
+		stopped:   make(chan struct{}),
+	}
 }
 
-type atomicStatus struct {
-	mu     sync.RWMutex
-	status domain.SourceStatus
-}
-
-func (s *atomicStatus) set(status domain.SourceStatus) {
-	s.mu.Lock()
-	s.status = status
-	s.mu.Unlock()
-}
-
-func (s *atomicStatus) get() domain.SourceStatus {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.status
-}
-
-func (s *publishingMockSource) Start(ctx context.Context, publish connector.PublishFunc) error {
-	s.status.set(domain.StatusRunning)
-	s.ready <- publish
-	<-ctx.Done()
-	s.status.set(domain.StatusStopped)
-	close(s.stopped)
-	return nil
-}
-
-func (s *publishingMockSource) Stop()                       {}
-func (s *publishingMockSource) ID() string                  { return s.id }
-func (s *publishingMockSource) Status() domain.SourceStatus { return s.status.get() }
-
-func (m *mockSource) Start(_ context.Context, _ connector.PublishFunc) error {
-	m.mu.Lock()
-	m.started = true
-	m.status = domain.StatusRunning
-	m.mu.Unlock()
-	return nil
-}
-func (m *mockSource) Stop() {
-	m.mu.Lock()
-	m.stopped = true
-	m.status = domain.StatusStopped
-	m.mu.Unlock()
-}
 func (m *mockSource) ID() string { return m.id }
-func (m *mockSource) Status() domain.SourceStatus {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.status
+
+func (m *mockSource) Open(context.Context) error {
+	m.opens.Add(1)
+	return nil
 }
+
+func (m *mockSource) Close() { m.closes.Add(1) }
+
+func (m *mockSource) Run(ctx context.Context, publish connector.PublishFunc, ready connector.ReadyFunc) error {
+	m.sessions.Add(1)
+	ready()
+	select {
+	case m.publishes <- publish:
+	default:
+	}
+	<-ctx.Done()
+	m.stopOnce.Do(func() { close(m.stopped) })
+	return nil
+}
+
 func (m *mockSource) isStopped() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.stopped
+	select {
+	case <-m.stopped:
+		return true
+	default:
+		return false
+	}
 }
 
 // mockConfig is the minimal valid stream config for a mock source.
@@ -101,19 +89,20 @@ func registerMock(t *testing.T, m *StreamManager, src connector.StreamSource) {
 	}
 }
 
-// waitForStatus blocks until src reports want. Register starts the source in a
-// goroutine, so a test that asserts on status has to wait for it rather than
-// race it.
-func waitForStatus(t *testing.T, src connector.StreamSource, want domain.SourceStatus) {
+// waitForStatus blocks until the manager reports want for id. Register returns
+// once the stream is admitted, and its first session starts just after, so a
+// test that asserts on status has to wait for it rather than race it.
+func waitForStatus(t *testing.T, m *StreamManager, id string, want domain.SourceStatus) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(5 * time.Second)
 	for {
-		if src.Status() == want {
+		got, ok := m.StatusOf(id)
+		if ok && got == want {
 			return
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("source %s status = %q, want %q", src.ID(), src.Status(), want)
+			t.Fatalf("stream %s status = %q, want %q", id, got, want)
 		case <-time.After(time.Millisecond):
 		}
 	}
@@ -122,19 +111,19 @@ func waitForStatus(t *testing.T, src connector.StreamSource, want domain.SourceS
 func TestStreamManager_RegisterAndList(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
 
-	src := &mockSource{id: "test-1", status: domain.StatusIdle}
+	src := newMockSource("test-1")
 
 	// A nil broker is fine here: mockSource never publishes, so the terminal
 	// handler is never reached. Going through Register rather than poking the
 	// manager's maps keeps every stream's state consistently populated — Remove
 	// and StopAll rely on that.
 	registerMock(t, manager, src)
-	// Register starts the source in a goroutine; mockSource reports Running
-	// once it has. The full status-to-health mapping is covered by
-	// TestSourceHealthAndMetricState — what matters here is that List reflects
-	// the source's actual state and that a stream which has never emitted
-	// reports no last_message_at.
-	waitForStatus(t, src, domain.StatusRunning)
+	// Register admits the stream and its first session starts just after, so
+	// the running state arrives asynchronously. The full status-to-health
+	// mapping is covered by TestSourceHealthAndMetricState — what matters here
+	// is that List reflects the stream's actual state and that a stream which
+	// has never emitted reports no last_message_at.
+	waitForStatus(t, manager, "test-1", domain.StatusRunning)
 
 	streams := manager.List()
 	if len(streams) != 1 {
@@ -153,15 +142,15 @@ func TestStreamManager_RegisterAndList(t *testing.T) {
 
 func TestStreamManager_ListIncludesHealthAndLastMessageAt(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
-	src := &mockSource{id: "observed", status: domain.StatusRunning}
+	src := newMockSource("observed")
 	want := time.Date(2026, time.July, 18, 12, 30, 0, 123, time.UTC)
-	runtime := &streamRuntime{}
-	runtime.lastMessageUnixNano.Store(want.UnixNano())
 
 	registerMock(t, manager, src)
-	manager.mu.Lock()
-	manager.runtimes[src.id] = runtime
-	manager.mu.Unlock()
+	waitForStatus(t, manager, src.id, domain.StatusRunning)
+
+	manager.mu.RLock()
+	manager.runtimes[src.id].lastMessageUnixNano.Store(want.UnixNano())
+	manager.mu.RUnlock()
 
 	streams := manager.List()
 	if len(streams) != 1 {
@@ -177,11 +166,7 @@ func TestStreamManager_ListIncludesHealthAndLastMessageAt(t *testing.T) {
 
 func TestStreamManager_RecordsLastMessageAtBeforePipelineDrop(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
-	src := &publishingMockSource{
-		id:      "live-source",
-		ready:   make(chan connector.PublishFunc, 1),
-		stopped: make(chan struct{}),
-	}
+	src := newMockSource("live-source")
 	cfg := domain.StreamSourceConfig{
 		ID:    src.id,
 		Topic: "events.live",
@@ -193,7 +178,7 @@ func TestStreamManager_RecordsLastMessageAtBeforePipelineDrop(t *testing.T) {
 	if err := manager.Register(src, cfg); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	publish := <-src.ready
+	publish := <-src.publishes
 	beforePublish := time.Now().UTC()
 	if err := publish(cfg.Topic, domain.StreamEvent{Type: "dropped"}); err != nil {
 		t.Fatalf("publish dropped event: %v", err)
@@ -218,29 +203,24 @@ func TestStreamManager_RecordsLastMessageAtBeforePipelineDrop(t *testing.T) {
 	}
 }
 
-func TestTrackSourceStateUpdatesOnTick(t *testing.T) {
-	streamID := "state-tracker-tick"
+// TestStreamStateGaugeFollowsLifecycle checks the gauge is written by the
+// transition itself rather than by a poller sampling a source: the manager owns
+// the state, so the series has to be right the moment it changes.
+func TestStreamStateGaugeFollowsLifecycle(t *testing.T) {
+	streamID := "state-gauge"
 	t.Cleanup(func() { telemetry.DeleteStreamState(streamID) })
 
-	src := &mockSource{id: streamID, status: domain.StatusIdle}
-	ctx, cancel := context.WithCancel(context.Background())
-	ticks := make(chan time.Time)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		trackSourceStateOnTicks(ctx, streamID, src, ticks)
-	}()
-
-	src.mu.Lock()
-	src.status = domain.StatusRunning
-	src.mu.Unlock()
-	ticks <- time.Now()
-	cancel()
-	<-done
+	manager := NewStreamManager(nil, nil)
+	src := newMockSource(streamID)
+	registerMock(t, manager, src)
+	waitForStatus(t, manager, streamID, domain.StatusRunning)
 
 	if got := testutil.ToFloat64(telemetry.StreamState.WithLabelValues(streamID, "connected")); got != 1 {
-		t.Errorf("connected gauge = %v, want 1 after tracker tick", got)
+		t.Errorf("connected gauge = %v, want 1 while the stream is running", got)
 	}
+
+	manager.StopAll()
+	assertStreamStateDeleted(t, streamID)
 }
 
 func TestSourceHealthAndMetricState(t *testing.T) {
@@ -269,9 +249,10 @@ func TestSourceHealthAndMetricState(t *testing.T) {
 
 func TestStreamManager_RemoveExisting(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
-	src := &mockSource{id: "rm-me", status: domain.StatusRunning}
+	src := newMockSource("rm-me")
 
 	registerMock(t, manager, src)
+	waitForStatus(t, manager, src.id, domain.StatusRunning)
 	telemetry.SetStreamState(src.id, "connected")
 
 	err := manager.Remove("rm-me")
@@ -302,8 +283,8 @@ func TestStreamManager_RemoveNotFound(t *testing.T) {
 func TestStreamManager_DuplicateRegister(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
 
-	src1 := &mockSource{id: "dupe", status: domain.StatusRunning}
-	src2 := &mockSource{id: "dupe", status: domain.StatusIdle}
+	src1 := newMockSource("dupe")
+	src2 := newMockSource("dupe")
 
 	registerMock(t, manager, src1)
 
@@ -315,15 +296,11 @@ func TestStreamManager_DuplicateRegister(t *testing.T) {
 func TestStreamManager_StopAll(t *testing.T) {
 	manager := NewStreamManager(nil, nil)
 
-	sources := []*mockSource{
-		{id: "a", status: domain.StatusRunning},
-		{id: "b", status: domain.StatusRunning},
-		{id: "c", status: domain.StatusRunning},
-	}
+	sources := []*mockSource{newMockSource("a"), newMockSource("b"), newMockSource("c")}
 
 	for _, s := range sources {
 		registerMock(t, manager, s)
-		telemetry.SetStreamState(s.id, "connected")
+		waitForStatus(t, manager, s.id, domain.StatusRunning)
 	}
 
 	manager.StopAll()

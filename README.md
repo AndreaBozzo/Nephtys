@@ -29,6 +29,7 @@ Nephtys ingests live data streams (WebSocket, webhooks, Server-Sent Events, gRPC
 - [REST API Reference](#rest-api)
 - [Configuration](#configuration)
 - [Supported Connectors](#supported-connectors)
+- [Stream Lifecycle](#stream-lifecycle)
 - [Pipeline Middlewares](#pipeline-middlewares)
 - [Persistence](#persistence)
 - [Development](#development)
@@ -67,7 +68,8 @@ See [`docs/examples/`](docs/examples/) for runnable configurations covering each
 - **Durable persistence** via NATS JetStream — both event payloads and stream configurations survive restarts.
 - **Configurable pipelines** — filter, transform, deduplicate, enrich, threshold, and batch payloads on the fly via JSON config.
 - **No extra infrastructure** — runs alongside NATS; no separate database, cache, or coordination service required.
-- **Self-healing pull connectors** — `websocket` and `sse` reconnect with exponential backoff; `rest_poller` retries on the next tick. (Inbound `webhook` and `grpc` sources delegate retry to the upstream client — see [Supported Connectors](#supported-connectors).)
+- **Supervised connectors** — one restart policy per stream, bounded and configurable, with a terminal state an operator can see and alert on. See [Stream Lifecycle](#stream-lifecycle).
+- **Registration that means something** — `201 Created` is returned only once the stream holds its resources and its config is durable, so a port conflict fails the request instead of a goroutine.
 - **Edge-friendly footprint** — single Go binary, low memory, suitable for resource-constrained deployments.
 
 ## Performance
@@ -131,6 +133,11 @@ flowchart LR
     Pipeline --> |Normalized Events| JS
     JS_C -.->|State Auto-rebuild| Connector
 ```
+
+Every stream moves through one state machine, from the registration request to a
+supervised restart to a terminal failure. [`docs/LIFECYCLE.md`](docs/LIFECYCLE.md)
+is the reference for it: what a `201 Created` guarantees, who owns the retry, and
+what an operator sees when a connector gives up.
 
 ## Quick Start
 
@@ -260,8 +267,8 @@ When a connector emits raw binary data, Nephtys publishes it directly to NATS in
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check (Verifies internal NATS connectivity) |
-| `GET` | `/v1/streams` | List active streams with connector status, health, and last-message time |
-| `POST` | `/v1/streams` | Register, save, and start a new stream |
+| `GET` | `/v1/streams` | List registered streams with status, health, last-message time, restart count, and last error |
+| `POST` | `/v1/streams` | Register, save, and start a new stream. Answers only once the stream's resources are held — see [Stream Lifecycle](#stream-lifecycle) |
 | `DELETE` | `/v1/streams/{id}` | Halt stream ingest and remove it from configuration |
 | `PUT` | `/v1/streams/{id}/pipeline` | Update a running stream pipeline, durably |
 
@@ -334,15 +341,55 @@ The same rules apply to `PUT /v1/streams/{id}/pipeline`, which returns 400 on an
 
 ## Supported Connectors
 
-| Kind | Direction | Reconnect | Description | Config Keys |
-|------|-----------|-----------|-------------|-------------|
-| `websocket` | Outbound (pull) | Auto, exp. backoff | Standard WebSocket. | `url` |
-| `rest_poller` | Outbound (pull) | N/A (next tick) | Periodically requests JSON from REST APIs at given intervals. | `url`, `interval` |
-| `sse` | Outbound (pull) | Auto, exp. backoff | Standard Server-Sent Events bindings. | `url` |
-| `webhook` | Inbound (push) | Client's responsibility | Local HTTP server receiving inbound webhooks. | `port`, `path`, `auth_token` |
-| `grpc` | Inbound (push) | Client's responsibility | gRPC server accepting client-streaming pushes. | `port` |
+| Kind | Direction | Default restart policy | Description | Config Keys |
+|------|-----------|------------------------|-------------|-------------|
+| `websocket` | Outbound (pull) | Unlimited, 1s → 30s | Standard WebSocket. | `url` |
+| `rest_poller` | Outbound (pull) | N/A (retries on next tick) | Periodically requests JSON from REST APIs at given intervals. | `url`, `interval` |
+| `sse` | Outbound (pull) | Unlimited, 1s → 30s | Standard Server-Sent Events bindings. | `url` |
+| `webhook` | Inbound (push) | None — terminal on failure | Local HTTP server receiving inbound webhooks. | `port`, `path`, `auth_token` |
+| `grpc` | Inbound (push) | None — terminal on failure | gRPC server accepting client-streaming pushes. | `port` |
 
-**Reconnect semantics.** Pull connectors (`websocket`, `sse`) reconnect transparently with exponential backoff (1s → 30s) on transient failures; `rest_poller` simply retries on the next tick. Push connectors (`webhook`, `grpc`) do not "reconnect" — they accept whatever the upstream client sends, so retry-on-failure is the *client's* responsibility. If the local HTTP/gRPC server itself fails (rare), the stream enters an error state and must be removed and re-registered.
+**Who owns the retry.** A connector runs one session and returns; deciding whether to run it again is the stream manager's job, under the stream's `restart` policy. Pull connectors (`websocket`, `sse`) reconnect on that ladder by default, unlimited, exactly as they did when they retried internally. `rest_poller` has no session to lose — a failed poll is retried on the next tick — so no restart policy applies to it. Push connectors (`webhook`, `grpc`) do not "reconnect": they accept whatever the upstream client sends, so retry-on-failure is the *client's* responsibility, and a lost listener is terminal unless you configure `restart` for them.
+
+Full detail — the state machine, the failure contract, and what a `201` guarantees — is in [`docs/LIFECYCLE.md`](docs/LIFECYCLE.md).
+
+## Stream Lifecycle
+
+A `POST /v1/streams` returns `201 Created` only once the stream's local resources are held: the id is free, the port is bound, the pipeline is built, and the config is durable. It does not wait for an upstream connection, which is remote and may take arbitrarily long — the response body's `state` field says whether the stream is already `running` or still `connecting`.
+
+**Failure contract.**
+
+| Situation | What happens |
+|---|---|
+| Port claimed by another stream, or held by any other process | `409 Conflict` naming the port; nothing is persisted and no stream is registered |
+| Any other failure to acquire local resources | `409 Conflict` with the reason; nothing is persisted |
+| Config cannot be persisted | `503 Service Unavailable`; resources are released |
+| A session ends and restart attempts remain | The stream re-acquires and reconnects; `status: reconnecting` |
+| A session ends with the budget spent | The stream stays registered in `status: error` with `last_error`, `last_error_at`, and `restart_count`. Its config stays stored, so it is visible and removable |
+| Startup finds a persisted config it cannot admit | The stream is registered in `status: error` carrying the reason, rather than silently skipped |
+
+**Restart policy.** Optional, per stream, validated by `--config-check`:
+
+```json
+{
+  "restart": {
+    "max_attempts": 10,
+    "initial_backoff": "1s",
+    "max_backoff": "30s",
+    "factor": 2.0,
+    "reset_after": "60s"
+  }
+}
+```
+
+- `max_attempts` — omit for unlimited, `0` to never restart. Negative is rejected.
+- `reset_after` — how long a session must stay up before the attempt budget is earned back. It is deliberately uptime-based and not connect-based: a source that accepts and drops immediately would otherwise restart forever without ever reaching a state you can alert on.
+
+Every field is optional and defaults to the policy for the stream's kind, so an existing configuration behaves exactly as it did before restart policies existed. Runnable example: [`docs/examples/sensor_websocket_restart.json`](docs/examples/sensor_websocket_restart.json).
+
+`nephtys_stream_restarts_total{stream_id}` counts supervised restarts; `nephtys_stream_state{stream_id,state="errored"}` is the alertable terminal state.
+
+One limit worth stating: `--config-check` validates a single document with no knowledge of its peers, so it cannot detect two streams claiming the same port. That conflict is caught at registration.
 
 ## Pipeline Middlewares
 

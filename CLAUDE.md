@@ -16,9 +16,9 @@ CI additionally runs `golangci-lint`. `.gitattributes` pins the working tree to 
 ## Architecture map
 
 - `cmd/nephtys/` — entry point, CLI flags, wiring
-- `internal/connector/` — one file per source kind implementing `StreamSource` (`source.go`); pull sources (websocket, sse, rest_poller) self-reconnect, push sources (webhook, grpc) don't
+- `internal/connector/` — one file per source kind implementing `StreamSource` (`source.go`): `Open` acquires local resources (a bound listener, a parsed interval) and never touches the network, `Run` serves one session and returns, `Close` releases. Connectors do not retry and hold no status — the manager's supervisor owns both (`docs/LIFECYCLE.md`)
 - `internal/pipeline/` — middleware chain: filter → transform → dedup → enrich → threshold → batch; opaque payloads, built by `builder.go`
-- `internal/server/` — REST API (`:3002`), `manager.go` owns stream lifecycle (`StreamManager`), optional bearer auth
+- `internal/server/` — REST API (`:3002`), `manager.go` owns stream lifecycle (`StreamManager`): synchronous admission, port claims, and the per-stream restart supervisor; `restart.go` resolves the policy; optional bearer auth
 - `internal/broker/` — JetStream publishing (content-type aware, binary passthrough)
 - `internal/store/` — stream-config persistence in a JetStream KV bucket, restored on startup
 - `internal/telemetry/` — per-stream Prometheus metrics

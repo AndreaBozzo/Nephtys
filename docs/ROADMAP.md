@@ -33,12 +33,12 @@ Completed foundations:
 - changelog discipline and reproducible examples, with `--config-check` enforced over every published example;
 - an authoritative configuration contract: one strict decoder and one validator behind `--config-check`, the REST API, and restore, with no silent fallback for a malformed explicit value;
 - deterministic pipeline-generation retirement, so a hot-swap has no window in which an accepted event is stranded;
+- one supervised stream lifecycle: registration blocks on local resource acquisition, a per-stream restart policy bounds recovery, and give-up is a visible terminal state (`docs/LIFECYCLE.md`);
 - a controlled Node-RED comparison and accepted systems paper.
 
 Remaining product gaps:
 
 - distribution stops at the container: no binary releases, checksums, or provenance;
-- operational recovery needs a connector supervisor and explicit restart policy, and a successful registration response does not yet mean the connector started;
 - the generic sensor story needs a second end-to-end public consumer;
 - replay is supported by JetStream but not yet taught as a first-class workflow;
 - live pipeline updates are not yet persisted across process restart;
@@ -77,6 +77,8 @@ Exit criteria:
 - the effective configuration of a running stream readable back over the API, so an operator can confirm what a stream is actually running;
 - separate liveness and readiness probes;
 - a shared connector lifecycle conformance suite with deterministic fault fixtures.
+
+The supervisor, the registration handshake, and restore behaviour are one design rather than three features: see [`LIFECYCLE.md`](LIFECYCLE.md).
 
 The reference deployment is a prerequisite for designing backpressure because it supplies a second consumer shape beyond Mercury.
 

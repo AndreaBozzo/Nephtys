@@ -113,6 +113,10 @@ func validateStreamConfig(cfg domain.StreamSourceConfig) error {
 		return err
 	}
 
+	if err := validateRestart(cfg.Restart); err != nil {
+		return err
+	}
+
 	return pipeline.ValidateConfig(cfg.Pipeline)
 }
 
@@ -191,6 +195,53 @@ func validateConnector(cfg domain.StreamSourceConfig) error {
 	}
 
 	return nil
+}
+
+// validateRestart checks the per-stream restart policy. Every field is
+// optional, and an omitted field means "no opinion" — the stream takes the
+// default for its kind.
+func validateRestart(rc *domain.RestartConfig) error {
+	if rc == nil {
+		return nil
+	}
+
+	if rc.MaxAttempts != nil && *rc.MaxAttempts < 0 {
+		return fmt.Errorf("restart.max_attempts: must not be negative (omit the field for unlimited restarts, or set 0 to never restart)")
+	}
+	if rc.Factor != 0 && rc.Factor < 1 {
+		return fmt.Errorf("restart.factor: must be at least 1, got %v", rc.Factor)
+	}
+
+	initial, err := validateRestartDuration("restart.initial_backoff", rc.InitialBackoff)
+	if err != nil {
+		return err
+	}
+	maximum, err := validateRestartDuration("restart.max_backoff", rc.MaxBackoff)
+	if err != nil {
+		return err
+	}
+	if _, err := validateRestartDuration("restart.reset_after", rc.ResetAfter); err != nil {
+		return err
+	}
+
+	if initial > 0 && maximum > 0 && maximum < initial {
+		return fmt.Errorf("restart.max_backoff: %q is shorter than restart.initial_backoff %q", rc.MaxBackoff, rc.InitialBackoff)
+	}
+	return nil
+}
+
+func validateRestartDuration(path, raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a valid duration (want a unit suffix, e.g. \"5s\", \"1m\")", path, raw)
+	}
+	if parsed <= 0 {
+		return 0, fmt.Errorf("%s: must be positive, got %q", path, raw)
+	}
+	return parsed, nil
 }
 
 // validatePollInterval checks rest_poller.interval at config time. Unparseable

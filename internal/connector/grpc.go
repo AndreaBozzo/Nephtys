@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -19,12 +18,15 @@ import (
 // GrpcSource runs a gRPC server to ingest events via client-streaming.
 //
 // Reliability model: this is an inbound (push) source. Unlike pull connectors
-// (websocket, sse, rest_poller) which reconnect with exponential backoff on
-// transient failures, the gRPC source does not "reconnect" — it accepts
-// whatever the upstream clients send. If the local gRPC server itself fails
-// (rare; e.g. port binding lost), the source enters StatusError and stays
-// there until the stream is removed and re-registered. Stream resumption and
-// retry on individual client streams are the upstream client's responsibility.
+// (websocket, sse, rest_poller) which reconnect on transient failures, the gRPC
+// source does not "reconnect" — it accepts whatever the upstream clients send.
+// Stream resumption and retry on individual client streams are the client's
+// responsibility.
+//
+// The listener is bound in Open, so a port conflict is reported to whoever
+// registered the stream instead of being discovered by a goroutine after the
+// API has already answered. Restarting a lost listener is the manager's
+// decision, driven by the stream's restart policy.
 type GrpcSource struct {
 	pb.UnimplementedStreamerServer
 
@@ -33,11 +35,8 @@ type GrpcSource struct {
 	config *domain.GrpcConfig
 	logger *slog.Logger
 
-	server *grpc.Server
-
-	mu     sync.RWMutex
-	status domain.SourceStatus
-	cancel context.CancelFunc
+	listener net.Listener
+	server   *grpc.Server
 
 	publish PublishFunc
 }
@@ -55,68 +54,88 @@ func NewGrpcSource(id, topic string, config *domain.GrpcConfig) *GrpcSource {
 		id:     id,
 		topic:  topic,
 		config: config,
-		status: domain.StatusIdle,
 		logger: slog.With("connector", id, "kind", "grpc"),
 	}
 }
 
 func (g *GrpcSource) ID() string { return g.id }
 
-func (g *GrpcSource) Status() domain.SourceStatus {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.status
+// Addr reports the address the listener is bound to. It is only meaningful
+// between Open and Close, and exists so a test can bind port 0 and discover
+// what it got.
+func (g *GrpcSource) Addr() net.Addr {
+	if g.listener == nil {
+		return nil
+	}
+	return g.listener.Addr()
 }
 
-func (g *GrpcSource) setStatus(s domain.SourceStatus) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.status = s
-}
-
-// Start boots the gRPC server and processes incoming streams.
-func (g *GrpcSource) Start(ctx context.Context, publish PublishFunc) error {
-	ctx, g.cancel = context.WithCancel(ctx)
-	g.publish = publish
-
-	lis, err := net.Listen("tcp", ":"+g.config.Port)
+// Open binds the gRPC listener. A port already taken — by another stream or by
+// any other process on the host — fails here, synchronously, with the address
+// in the error.
+func (g *GrpcSource) Open(ctx context.Context) error {
+	var lc net.ListenConfig
+	lis, err := lc.Listen(ctx, "tcp", ":"+g.config.Port)
 	if err != nil {
-		g.setStatus(domain.StatusError)
-		return fmt.Errorf("failed to listen on port %s: %w", g.config.Port, err)
+		return fmt.Errorf("bind grpc listener on port %s: %w", g.config.Port, err)
+	}
+	g.listener = lis
+	return nil
+}
+
+// Run serves incoming client streams until the server fails or ctx is cancelled.
+func (g *GrpcSource) Run(ctx context.Context, publish PublishFunc, ready ReadyFunc) error {
+	lis := g.listener
+	if lis == nil {
+		return errors.New("grpc source: Run called without a successful Open")
 	}
 
-	g.server = grpc.NewServer()
-	pb.RegisterStreamerServer(g.server, g)
+	g.publish = publish
+	srv := grpc.NewServer()
+	pb.RegisterStreamerServer(srv, g)
+	g.server = srv
 
-	g.setStatus(domain.StatusRunning)
-	g.logger.Info("Starting gRPC Streamer server", "port", g.config.Port)
+	g.logger.Info("Serving gRPC Streamer", "port", g.config.Port)
 
 	errChan := make(chan error, 1)
 	go func() {
-		if err := g.server.Serve(lis); err != nil {
-			g.logger.Error("gRPC server failed", "error", err)
-			g.setStatus(domain.StatusError)
-			errChan <- err
-		}
+		// Serve the locals, not the fields: Close may clear the fields as soon
+		// as Run returns, and this goroutine outlives neither.
+		errChan <- srv.Serve(lis)
 	}()
 
-	for {
-		select {
-		case err := <-errChan:
-			return err
-		case <-ctx.Done():
-			g.setStatus(domain.StatusStopped)
-			g.logger.Info("Stopping gRPC Streamer server")
-			g.server.GracefulStop()
-			return ctx.Err()
+	// The listener is already bound, so the session is live the moment it is
+	// being served.
+	ready()
+
+	select {
+	case err := <-errChan:
+		if err == nil {
+			return nil
 		}
+		g.logger.Error("gRPC server failed", "error", err)
+		return err
+	case <-ctx.Done():
+		g.logger.Info("Stopping gRPC Streamer server")
+		srv.GracefulStop()
+		// Wait for Serve to return, so no goroutine of this session survives it.
+		<-errChan
+		return nil
 	}
 }
 
-// Stop shuts down the gRPC server.
-func (g *GrpcSource) Stop() {
-	if g.cancel != nil {
-		g.cancel()
+// Close stops the server and releases the listener. Safe to call more than
+// once, and safe on a source whose Run never started.
+func (g *GrpcSource) Close() {
+	if g.server != nil {
+		g.server.Stop()
+		g.server = nil
+	}
+	if g.listener != nil {
+		// GracefulStop/Stop already closed it in the common path; this covers
+		// an Open with no Run.
+		_ = g.listener.Close()
+		g.listener = nil
 	}
 }
 

@@ -69,10 +69,6 @@ func TestSSESource_Success(t *testing.T) {
 	if source.ID() != "test-sse" {
 		t.Errorf("Expected ID 'test-sse', got %q", source.ID())
 	}
-	if source.Status() != domain.StatusIdle {
-		t.Errorf("Expected StatusIdle, got %v", source.Status())
-	}
-
 	events := make(chan domain.StreamEvent, 5)
 	publish := func(topic string, event domain.StreamEvent) error {
 		if topic != "test-topic" {
@@ -85,16 +81,22 @@ func TestSSESource_Success(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	if err := source.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+
 	// Run source in a goroutine
+	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- source.Start(ctx, publish)
+		done <- source.Run(ctx, publish, func() { close(ready) })
 	}()
 
-	// Wait for connection
-	time.Sleep(100 * time.Millisecond)
-	if source.Status() != domain.StatusRunning {
-		t.Errorf("Expected StatusRunning, got %v", source.Status())
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source never reported ready")
 	}
 
 	verifyEvent := func(expectedType string, expectedPayload func(map[string]any) bool) {
@@ -135,24 +137,23 @@ func TestSSESource_Success(t *testing.T) {
 	})
 
 	// Stop source
-	source.Stop()
+	cancel()
 
 	// Wait for goroutine to exit
 	select {
 	case err := <-done:
-		if err != context.Canceled {
-			t.Errorf("Expected context.Canceled, got %v", err)
+		if err != nil {
+			t.Errorf("Run after cancellation returned %v, want nil", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Timeout waiting for Start to return")
-	}
-
-	if source.Status() != domain.StatusStopped {
-		t.Errorf("Expected StatusStopped, got %v", source.Status())
+		t.Fatal("Timeout waiting for Run to return")
 	}
 }
 
-func TestSSESource_Reconnect(t *testing.T) {
+// TestSSESource_SessionEndsOnBadStatus covers the failure the supervisor turns
+// into a reconnect: a non-2xx response ends the session with an error instead
+// of being retried inside the connector, and the next session succeeds.
+func TestSSESource_SessionEndsOnBadStatus(t *testing.T) {
 	connectCount := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		connectCount++
@@ -186,12 +187,18 @@ func TestSSESource_Reconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Run source
+	// First session: the endpoint answers 503, so Run reports the failure
+	// rather than swallowing it in a retry loop of its own.
+	err := source.Run(ctx, publish, func() { t.Error("ready fired on a 503 response") })
+	if err == nil {
+		t.Fatal("Run against a 503 endpoint returned nil")
+	}
+
+	// Second session: the same source connects and delivers.
 	go func() {
-		_ = source.Start(ctx, publish)
+		_ = source.Run(ctx, publish, func() {})
 	}()
 
-	// Wait for successful event from second connection
 	select {
 	case evt := <-events:
 		var p map[string]any
@@ -208,6 +215,4 @@ func TestSSESource_Reconnect(t *testing.T) {
 	if connectCount < 2 {
 		t.Errorf("Expected at least 2 connections (1 failed + 1 successful), got %d", connectCount)
 	}
-
-	source.Stop()
 }

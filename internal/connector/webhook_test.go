@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -178,42 +179,87 @@ func TestWebhookSource(t *testing.T) {
 }
 
 func TestWebhookSource_Lifecycle(t *testing.T) {
-	config := &domain.WebhookConfig{
-		Port: "18081",
+	source := NewWebhookSource("test-webhook-lifecycle", "test.topic", &domain.WebhookConfig{
+		Port: "0", // let the OS pick, so a busy port cannot flake the test
 		Path: "/webhook",
+	})
+
+	if err := source.Open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
 	}
+	defer source.Close()
 
-	source := NewWebhookSource("test-webhook-lifecycle", "test.topic", config)
-
-	if source.Status() != domain.StatusIdle {
-		t.Errorf("Expected status idle, got %s", source.Status())
+	addr := source.Addr()
+	if addr == nil {
+		t.Fatal("Open returned nil error but bound no address")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Run start in a goroutine
+	ready := make(chan struct{})
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- source.Start(ctx, func(topic string, event domain.StreamEvent) error { return nil })
+		errCh <- source.Run(ctx, func(string, domain.StreamEvent) error { return nil }, func() { close(ready) })
 	}()
 
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
-
-	if source.Status() != domain.StatusRunning {
-		t.Errorf("Expected status running, got %s", source.Status())
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source never reported ready")
 	}
 
-	// Trigger shutdown
-	source.Stop()
-
-	err := <-errCh
-	if err != nil && err != context.Canceled {
-		t.Errorf("Expected canceled error, got %v", err)
+	// ready means bound and serving, not merely "about to be": the endpoint
+	// has to answer immediately.
+	res, err := http.Post("http://"+addr.String()+"/webhook", "application/json", strings.NewReader(`{"a":1}`))
+	if err != nil {
+		t.Fatalf("post to a source that reported ready: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusAccepted {
+		t.Errorf("status = %d, want %d", res.StatusCode, http.StatusAccepted)
 	}
 
-	if source.Status() != domain.StatusStopped {
-		t.Errorf("Expected status stopped, got %s", source.Status())
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Errorf("Run after cancellation returned %v, want nil", err)
+	}
+}
+
+// TestWebhookSource_OpenReportsBindFailure is the connector half of the
+// registration contract: a port that is already taken has to fail in Open,
+// synchronously, so the caller that registered the stream is the one told.
+func TestWebhookSource_OpenReportsBindFailure(t *testing.T) {
+	// Bind the wildcard address, the same one the source binds. Holding only
+	// 127.0.0.1:P does not conflict with 0.0.0.0:P on every platform, so a
+	// loopback holder would make this test pass for the wrong reason.
+	holder, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("bind holder: %v", err)
+	}
+	defer func() { _ = holder.Close() }()
+
+	_, port, err := net.SplitHostPort(holder.Addr().String())
+	if err != nil {
+		t.Fatalf("split holder addr: %v", err)
+	}
+
+	source := NewWebhookSource("taken", "test.topic", &domain.WebhookConfig{Port: port, Path: "/webhook"})
+	err = source.Open(context.Background())
+	if err == nil {
+		source.Close()
+		t.Fatal("Open on a port held by another listener returned nil")
+	}
+	if !strings.Contains(err.Error(), port) {
+		t.Errorf("Open error %q does not name the port %s", err, port)
+	}
+}
+
+// TestWebhookSource_RunWithoutOpen guards the ordering the manager relies on.
+func TestWebhookSource_RunWithoutOpen(t *testing.T) {
+	source := NewWebhookSource("no-open", "test.topic", nil)
+	err := source.Run(context.Background(), func(string, domain.StreamEvent) error { return nil }, func() {})
+	if err == nil {
+		t.Fatal("Run without Open returned nil")
 	}
 }

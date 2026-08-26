@@ -7,13 +7,16 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	"nephtys/internal/domain"
 )
 
 // RESTPollerSource connects to a REST API periodically and emits StreamEvents.
+//
+// A poll that fails is not a session failure: the next tick retries, the same
+// way it always has. The source therefore has no restart of its own to ask for
+// — its session ends only when the stream is stopped.
 type RESTPollerSource struct {
 	id     string
 	url    string
@@ -23,9 +26,7 @@ type RESTPollerSource struct {
 	config *domain.RestPollerConfig
 	client *http.Client
 
-	mu     sync.RWMutex
-	status domain.SourceStatus
-	cancel context.CancelFunc
+	interval time.Duration
 }
 
 // NewRESTPollerSource creates a new REST poller connector.
@@ -48,7 +49,6 @@ func NewRESTPollerSource(id, url, topic string, config *domain.RestPollerConfig)
 		url:    url,
 		topic:  topic,
 		config: config,
-		status: domain.StatusIdle,
 		logger: slog.With("connector", id),
 		client: &http.Client{
 			Timeout: 10 * time.Second,
@@ -58,34 +58,32 @@ func NewRESTPollerSource(id, url, topic string, config *domain.RestPollerConfig)
 
 func (r *RESTPollerSource) ID() string { return r.id }
 
-func (r *RESTPollerSource) Status() domain.SourceStatus {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.status
-}
-
-func (r *RESTPollerSource) setStatus(s domain.SourceStatus) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.status = s
-}
-
-// Start begins the polling loop.
-func (r *RESTPollerSource) Start(ctx context.Context, publish PublishFunc) error {
-	ctx, r.cancel = context.WithCancel(ctx)
-
-	intervalDuration, err := time.ParseDuration(r.config.Interval)
+// Open parses the polling interval. It is the one local resource this source
+// needs, and an unparseable interval fails registration rather than a
+// goroutine.
+func (r *RESTPollerSource) Open(context.Context) error {
+	interval, err := time.ParseDuration(r.config.Interval)
 	if err != nil {
-		r.logger.Error("Invalid interval duration", "error", err, "interval", r.config.Interval)
-		r.setStatus(domain.StatusError)
 		return fmt.Errorf("invalid interval duration %q: %w", r.config.Interval, err)
 	}
+	if interval <= 0 {
+		return fmt.Errorf("invalid interval duration %q: must be positive", r.config.Interval)
+	}
+	r.interval = interval
+	return nil
+}
 
-	r.setStatus(domain.StatusRunning)
-	r.logger.Info("Started", "interval", intervalDuration, "url", r.url)
+// Close releases nothing: the ticker is owned by Run.
+func (r *RESTPollerSource) Close() {}
 
-	ticker := time.NewTicker(intervalDuration)
+// Run polls the endpoint until ctx is cancelled.
+func (r *RESTPollerSource) Run(ctx context.Context, publish PublishFunc, ready ReadyFunc) error {
+	r.logger.Info("Started", "interval", r.interval, "url", r.url)
+
+	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
+
+	ready()
 
 	// Perform initial fetch immediately
 	r.poll(ctx, publish)
@@ -93,9 +91,8 @@ func (r *RESTPollerSource) Start(ctx context.Context, publish PublishFunc) error
 	for {
 		select {
 		case <-ctx.Done():
-			r.setStatus(domain.StatusStopped)
 			r.logger.Info("Stopped")
-			return ctx.Err()
+			return nil
 		case <-ticker.C:
 			r.poll(ctx, publish)
 		}
@@ -161,12 +158,5 @@ func (r *RESTPollerSource) poll(ctx context.Context, publish PublishFunc) {
 		r.logger.Error("Publish failed", "error", err)
 	} else {
 		r.logger.Debug("Event published", "topic", r.topic)
-	}
-}
-
-// Stop cancels the source's context.
-func (r *RESTPollerSource) Stop() {
-	if r.cancel != nil {
-		r.cancel()
 	}
 }

@@ -18,7 +18,6 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
 	"nephtys/internal/broker"
-	"nephtys/internal/connector"
 	"nephtys/internal/domain"
 	"nephtys/internal/store"
 )
@@ -85,7 +84,7 @@ func TestRegister_WithBroker(t *testing.T) {
 
 	manager := NewStreamManager(brk, nil)
 
-	src := &mockSource{id: "reg-test", status: domain.StatusIdle}
+	src := newMockSource("reg-test")
 	cfg := domain.StreamSourceConfig{ID: "reg-test", Kind: "websocket", Topic: "nephtys.stream.test"}
 
 	if err := manager.Register(src, cfg); err != nil {
@@ -115,7 +114,7 @@ func TestRegister_WithStore(t *testing.T) {
 
 	manager := NewStreamManager(brk, st)
 
-	src := &mockSource{id: "stored-test", status: domain.StatusIdle}
+	src := newMockSource("stored-test")
 	cfg := domain.StreamSourceConfig{ID: "stored-test", Kind: "webhook", Topic: "nephtys.stream.stored"}
 
 	if err := manager.Register(src, cfg); err != nil {
@@ -144,14 +143,14 @@ func TestRegister_Duplicate(t *testing.T) {
 
 	manager := NewStreamManager(brk, nil)
 
-	src1 := &mockSource{id: "dup", status: domain.StatusIdle}
+	src1 := newMockSource("dup")
 	cfg := domain.StreamSourceConfig{ID: "dup", Kind: "websocket", Topic: "nephtys.stream.dup"}
 
 	if err := manager.Register(src1, cfg); err != nil {
 		t.Fatalf("first register: %v", err)
 	}
 
-	src2 := &mockSource{id: "dup", status: domain.StatusIdle}
+	src2 := newMockSource("dup")
 	if err := manager.Register(src2, cfg); err == nil {
 		t.Fatal("expected duplicate error")
 	}
@@ -196,13 +195,19 @@ func TestRestore_WithStore(t *testing.T) {
 	manager.StopAll()
 }
 
-// TestRestore_SkipsPersistedConfigTheValidatorRejects covers the one path that
-// can start a stream without passing through the API's validation. The KV bucket
-// holds whatever the version that wrote it accepted, so a config stored before
-// the configuration contract tightened must be refused on the way back in — not
+// TestRestore_RefusedConfigStaysVisible covers the one path that can start a
+// stream without passing through the API's validation. The KV bucket holds
+// whatever the version that wrote it accepted, so a config stored before the
+// configuration contract tightened must be refused on the way back in — not
 // started with a silently reinterpreted pipeline — while its valid siblings
 // still restore.
-func TestRestore_SkipsPersistedConfigTheValidatorRejects(t *testing.T) {
+//
+// Refused does not mean invisible. At startup there is no caller to answer, so
+// a config that stays in the store while its stream is absent from the API is
+// the least useful outcome available: the operator sees nothing to delete and
+// nothing to explain the missing data. Such a stream is registered in a
+// terminal failed state instead, carrying the reason.
+func TestRestore_RefusedConfigStaysVisible(t *testing.T) {
 	srv := startTestNATS(t)
 	brk := connectBroker(t, srv)
 
@@ -255,13 +260,28 @@ func TestRestore_SkipsPersistedConfigTheValidatorRejects(t *testing.T) {
 	}
 	t.Cleanup(manager.StopAll)
 
-	var ids []string
+	infos := make(map[string]StreamInfo)
 	for _, s := range manager.List() {
-		ids = append(ids, s.ID)
+		infos[s.ID] = s
 	}
-	if len(ids) != 1 || ids[0] != good.ID {
-		t.Errorf("restored %v, want only %q — the invalid config was started anyway", ids, good.ID)
+	if len(infos) != 3 {
+		t.Fatalf("listed %d streams, want all 3 persisted ones", len(infos))
 	}
+
+	for _, id := range []string{stalePipeline.ID, staleConnector.ID} {
+		info := infos[id]
+		if info.Status != domain.StatusError {
+			t.Errorf("%s status = %q, want %q — the invalid config was started anyway", id, info.Status, domain.StatusError)
+		}
+		if info.Health != "errored" {
+			t.Errorf("%s health = %q, want errored", id, info.Health)
+		}
+		if info.LastError == "" {
+			t.Errorf("%s is failed but reports no reason", id)
+		}
+	}
+
+	waitForStatus(t, manager, good.ID, domain.StatusRunning)
 }
 
 func TestRestore_NilStore(t *testing.T) {
@@ -352,7 +372,7 @@ func TestUpdatePipeline_WithBroker(t *testing.T) {
 
 	manager := NewStreamManager(brk, nil)
 
-	src := &mockSource{id: "pipe-test", status: domain.StatusIdle}
+	src := newMockSource("pipe-test")
 	cfg := domain.StreamSourceConfig{ID: "pipe-test", Kind: "websocket", Topic: "nephtys.stream.pipe"}
 
 	if err := manager.Register(src, cfg); err != nil {
@@ -390,11 +410,7 @@ func TestUpdatePipeline_ConcurrentIngestion(t *testing.T) {
 		}
 	}
 
-	src := &publishingMockSource{
-		id:      "swap-under-load",
-		ready:   make(chan connector.PublishFunc, 1),
-		stopped: make(chan struct{}),
-	}
+	src := newMockSource("swap-under-load")
 	cfg := domain.StreamSourceConfig{
 		ID:       src.id,
 		Kind:     "websocket",
@@ -404,7 +420,7 @@ func TestUpdatePipeline_ConcurrentIngestion(t *testing.T) {
 	if err := manager.Register(src, cfg); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	publish := <-src.ready
+	publish := <-src.publishes
 
 	var (
 		wg       sync.WaitGroup

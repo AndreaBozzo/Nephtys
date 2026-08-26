@@ -56,9 +56,15 @@ func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Register returned, so the stream holds its resources and its config is
+	// durable. Report the lifecycle state alongside the legacy "started" so a
+	// caller can tell an already-connected stream from one still dialling,
+	// rather than inferring either from the status code.
+	state, _ := s.manager.StatusOf(cfg.ID)
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":     cfg.ID,
 		"status": "started",
+		"state":  string(state),
 	})
 }
 
@@ -127,12 +133,23 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// registerStatus maps a Register failure to a status. A duplicate id is a
-// conflict; a config store that would not accept the new stream is not — the
+// registerStatus maps a Register failure to a status. A duplicate id, a port
+// another stream holds, and a resource the host will not give us are all
+// conflicts: the request is well-formed but disagrees with the current state of
+// the machine, and no retry of the same config will change that on its own.
+//
+// Every source.Open failure maps to 409 rather than splitting "address in use"
+// from the rest by errno. The taxonomy that split would buy is already in the
+// message, and matching errnos across Linux, macOS and Windows is a portability
+// liability for no gain.
+//
+// A config store that would not accept the new stream is not a conflict — the
 // caller sent a valid request that a dependency prevented us from honouring.
 func registerStatus(err error) int {
 	switch {
-	case errors.Is(err, ErrStreamExists):
+	case errors.Is(err, ErrStreamExists),
+		errors.Is(err, ErrPortConflict),
+		errors.Is(err, ErrSourceOpen):
 		return http.StatusConflict
 	default:
 		return http.StatusServiceUnavailable
