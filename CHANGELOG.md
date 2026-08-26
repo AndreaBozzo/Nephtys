@@ -8,7 +8,41 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+### Added
+- Per-stream restart policy and a supervisor to run it. A stream may now carry an optional `restart` block — `max_attempts`, `initial_backoff`, `max_backoff`, `factor`, `reset_after` — validated by `--config-check` like every other part of the config. (#15)
+
+  The supervisor is the only retry loop in the process. Connectors used to own their own: `websocket` and `sse` retried forever on a hardcoded 1s→30s ladder, `rest_poller` retried on the next tick, and the push connectors did not retry at all. A restart policy bolted onto that would have reached only the push connectors, because `Start` on a pull connector never returned except on cancellation — the three that actually retried would have kept an unconfigurable policy of their own. So `StreamSource` now runs one session and returns, and the ladder and the attempt budget live in the manager.
+
+  Defaults are per kind. `websocket` and `sse` keep exactly what they had: unlimited attempts on the same 1s→30s ladder. `rest_poller` has no session to lose, so no policy reaches it. `webhook` and `grpc` are the one deliberate behaviour change: losing a listener used to be terminal on the first failure, with the README telling operators to remove and re-register the stream by hand, and they now get five attempts before reaching the same terminal state. What that preserved was a documented limitation rather than a contract — set `max_attempts: 0` for the old behaviour.
+
+  Note that omitting `max_attempts` takes the kind default rather than meaning unlimited: a webhook whose `restart` block sets only backoff fields still stops after five attempts.
+
+  The attempt budget is earned back by staying up for `reset_after`, not by connecting. The old loops reset their counter the moment a dial succeeded, which is harmless under an unbounded ladder and a bug under a bounded one: a source that accepts and drops immediately resets the counter every cycle and retries forever, never reaching a state anything can alert on.
+
+  A stream that spends its budget goes terminal and **stays registered**: `status: error`, `health: errored`, `nephtys_stream_state{state="errored"}`, and its config still stored.
+- `restart_count`, `last_error` and `last_error_at` on `GET /v1/streams`, plus the counter `nephtys_stream_restarts_total{stream_id}`. `restart_count` is cumulative over a stream's life rather than its position in the current budget, so it never decreases. A failed stream always carries a reason, including when its session ended without an error of its own. `last_error` is redacted before it is stored: it is served by an endpoint whose auth is optional, and connector errors quote the endpoint that failed, which routinely carries a token in a query string or in userinfo — those are stripped, and the unredacted error stays in the log.
+- `docs/LIFECYCLE.md` documents the whole lifecycle in one place — the state machine, the failure contract, the concurrency invariants — and the README links to it from Architecture, Supported Connectors, and a new Stream Lifecycle section.
+
 ### Fixed
+- **Breaking (API status codes):** `201 Created` now means the connector started. `POST /v1/streams` persisted the config, launched the source in a goroutine and answered `201` without waiting, so the response certified only that a goroutine had been created. A webhook stream whose port was already taken answered `201`, reported `status: running` / `health: healthy` for the moment before its bind failed, and then sat in an error state that the caller had no reason to look for. (#59)
+
+  Registration now blocks on admission: the id is free, the port is claimed, the pipeline builds, the listener binds, and the config is written — all of it local, deterministic, and bounded — before the request is answered. It does not wait for an upstream connection, which is remote and may take arbitrarily long, so the `201` body carries a new `state` field beside the existing `status: "started"` — a snapshot of where the stream had got to as the response was written, usually `connecting`.
+
+  What changed in what you get back:
+
+  | Case | Before | After |
+  | --- | --- | --- |
+  | `POST /v1/streams` on a port another stream holds | `201 Created`, stream dies asynchronously | `409 Conflict` naming the port and the holding stream |
+  | `POST /v1/streams` on a port held by another process | `201 Created`, stream dies asynchronously | `409 Conflict` with the bind error |
+  | `POST /v1/streams` whose source cannot acquire its resources | `201 Created` | `409 Conflict` with the reason |
+  | `POST /v1/streams` succeeding | `201 Created` | `201 Created`, plus a `state` field |
+
+  Nothing is left behind by a failed registration: no persisted config, no claimed port, no half-installed stream. Because resources are now acquired before the config is written, the compensating "delete the config we just wrote" path is gone.
+
+  Two connectors changed shape to make this possible. `WebhookSource` set its status to running *before* calling `ListenAndServe`; `GrpcSource` already bound its listener synchronously and it made no difference, because the error was returned into a goroutine and logged. Both now bind in `Open`, before anything reports anything. Connectors no longer carry a status at all — the manager owns lifecycle state, which removes the class rather than the two instances of it.
+- `rest_poller` no longer reports itself running before it has reached its endpoint. It called ready on entry, so a poller whose URL was wrong — or whose endpoint had been 404ing for a day — read as `status: running` / `health: healthy` while it had ingested nothing and never could, with only a stale `last_message_at` telling the truth. It now reports ready after the first poll that reaches the endpoint, which is what `websocket` and `sse` have always done with their handshake. An answer carrying no rows still counts: an empty `200` proves the URL is live.
+- An SSE stream that ends cleanly is now reported as a session failure rather than silently ending one. The scanner returns no error on a clean EOF, so the session ended, an attempt was spent, and nothing was recorded to say why — a stream could reach a terminal state with an empty `last_error`.
+- Restore no longer drops streams it cannot start while keeping their configs. A persisted config that failed validation or could not be built was skipped with a warning and left in the KV bucket, so the stream existed in storage, was absent from `GET /v1/streams`, and announced itself only in one line of boot output. Such a stream is now registered in a terminal `error` state carrying the reason, so it is visible, explicable, and removable. Restore also admits in sorted id order, so when two persisted streams claim one port the same one wins on every restart instead of it depending on map iteration.
 - **Breaking (API status codes):** a pipeline update is now durable, and a management call that cannot be persisted no longer reports success. `PUT /v1/streams/{id}/pipeline` swapped the live handler and deliberately left the JetStream KV copy of the config alone, so a change the API had answered `200 OK` for was silently reverted by the next restart — the stream came back on the pipeline it was registered with, with nothing recording that an update had ever been accepted. (#28)
 
   The manager now keeps each stream's *effective* config — the registered one, amended by every accepted pipeline update — and writes it before the swap, under the same lock that guards registration and removal. Ordering it that way is what makes the two states inseparable rather than merely usually equal: if the store rejects the write, no swap happens, the stream keeps running the pipeline the store still describes, and the caller is told. Only the `pipeline` block is replaced; `kind`, `url`, `topic` and the connector block are carried over untouched. There is no ephemeral mode — a pipeline update means the same thing whether or not the process survives the hour.

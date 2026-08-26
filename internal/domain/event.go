@@ -75,6 +75,36 @@ type StreamSourceConfig struct {
 	Sse        *SseConfig        `json:"sse,omitempty"`
 	Websocket  *WebsocketConfig  `json:"websocket,omitempty"`
 	Pipeline   *PipelineConfig   `json:"pipeline,omitempty"`
+	Restart    *RestartConfig    `json:"restart,omitempty"`
+}
+
+// RestartConfig bounds how a stream's supervisor recovers from a session that
+// ended. Every field is optional; an omitted field takes the default for the
+// stream's kind, which reproduces the behaviour that kind had before restart
+// policies existed.
+type RestartConfig struct {
+	// MaxAttempts caps consecutive restarts before the stream is marked
+	// failed. Omitting it takes the default for the stream's kind — unlimited
+	// for the pull connectors, a small bounded budget for the push ones — and
+	// 0 means never restart. A pointer is what separates those two: encoding
+	// "take the default" as the zero value would give an operator who writes 0
+	// to mean "leave it down" the opposite of what they asked for.
+	MaxAttempts *int `json:"max_attempts,omitempty"`
+
+	// InitialBackoff is the delay before the first restart, e.g. "1s".
+	InitialBackoff string `json:"initial_backoff,omitempty"`
+
+	// MaxBackoff caps the delay the ladder grows to, e.g. "30s".
+	MaxBackoff string `json:"max_backoff,omitempty"`
+
+	// Factor multiplies the delay after each attempt. Must be at least 1.
+	Factor float64 `json:"factor,omitempty"`
+
+	// ResetAfter is how long a session must stay up before the attempt budget
+	// is earned back, e.g. "60s". Resetting on connect instead would let a
+	// source that accepts and immediately drops spin forever without ever
+	// reaching a terminal state.
+	ResetAfter string `json:"reset_after,omitempty"`
 }
 
 // StringList is a []string that also accepts a single JSON string,

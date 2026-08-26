@@ -5,27 +5,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"nephtys/internal/domain"
 )
 
 // SSESource connects to an SSE endpoint and emits StreamEvents.
+//
+// Reconnection is not its business: Run reads one response body and returns
+// when that response ends. The manager's supervisor decides whether, when, and
+// how many times to run it again.
 type SSESource struct {
 	id     string
 	url    string
 	topic  string
 	config *domain.SseConfig
 	logger *slog.Logger
-
-	mu     sync.RWMutex
-	status domain.SourceStatus
-	cancel context.CancelFunc
 	client *http.Client
 }
 
@@ -36,7 +35,6 @@ func NewSSESource(id, url, topic string, config *domain.SseConfig) *SSESource {
 		url:    url,
 		topic:  topic,
 		config: config,
-		status: domain.StatusIdle,
 		logger: slog.With("connector", id, "kind", "sse"),
 		client: &http.Client{},
 	}
@@ -44,106 +42,62 @@ func NewSSESource(id, url, topic string, config *domain.SseConfig) *SSESource {
 
 func (s *SSESource) ID() string { return s.id }
 
-func (s *SSESource) Status() domain.SourceStatus {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.status
-}
+// Open acquires nothing: an SSE source holds no local resource, and the request
+// belongs to the session rather than to registration.
+func (s *SSESource) Open(context.Context) error { return nil }
 
-func (s *SSESource) setStatus(st domain.SourceStatus) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.status = st
-}
+// Close releases nothing, for the same reason. The response body is owned by
+// Run and closed before it returns.
+func (s *SSESource) Close() {}
 
-// Start connects to the SSE endpoint and reads events in a loop.
-// It reconnects with exponential backoff on transient errors.
-func (s *SSESource) Start(ctx context.Context, publish PublishFunc) error {
-	ctx, s.cancel = context.WithCancel(ctx)
-	attempt := 0
+// Run issues one request and reads frames until the stream ends or ctx is
+// cancelled.
+func (s *SSESource) Run(ctx context.Context, publish PublishFunc, ready ReadyFunc) error {
+	s.logger.Info("Connecting", "url", s.url)
 
-	for {
-		select {
-		case <-ctx.Done():
-			s.setStatus(domain.StatusStopped)
-			s.logger.Info("Stopped")
-			return ctx.Err()
-		default:
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Connection", "keep-alive")
+
+	if s.config != nil && s.config.Headers != nil {
+		for k, v := range s.config.Headers {
+			req.Header.Set(k, v)
 		}
+	}
 
-		if attempt > 0 {
-			s.setStatus(domain.StatusReconnecting)
-			backoff := time.Duration(math.Min(
-				float64(initialBackoff)*math.Pow(backoffFactor, float64(attempt-1)),
-				float64(maxBackoff),
-			))
-			s.logger.Info("Reconnecting", "attempt", attempt, "backoff", backoff)
-
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				s.setStatus(domain.StatusStopped)
-				return ctx.Err()
-			}
-		}
-
-		s.setStatus(domain.StatusConnecting)
-		s.logger.Info("Connecting", "url", s.url)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
-		if err != nil {
-			s.logger.Error("Failed to create request", "error", err)
-			s.setStatus(domain.StatusError)
-			attempt++
-			continue
-		}
-
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("Cache-Control", "no-cache")
-		req.Header.Set("Connection", "keep-alive")
-
-		if s.config != nil && s.config.Headers != nil {
-			for k, v := range s.config.Headers {
-				req.Header.Set(k, v)
-			}
-		}
-
-		resp, err := s.client.Do(req)
-		if err != nil {
-			s.logger.Error("Connection failed", "error", err)
-			s.setStatus(domain.StatusError)
-			attempt++
-			continue
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			s.logger.Error("Unexpected status code", "status", resp.StatusCode)
-			s.setStatus(domain.StatusError)
-			if err := resp.Body.Close(); err != nil {
-				s.logger.Warn("Failed to close response body", "error", err)
-			}
-			attempt++
-			continue
-		}
-
-		s.setStatus(domain.StatusRunning)
-		s.logger.Info("Connected")
-		attempt = 0 // reset on successful connection
-
-		err = s.readLoop(ctx, resp, publish)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			s.logger.Warn("Failed to close response body", "error", closeErr)
 		}
+	}()
 
-		if ctx.Err() != nil {
-			s.setStatus(domain.StatusStopped)
-			return ctx.Err()
-		}
-
-		s.logger.Warn("Connection lost, will retry", "error", err)
-		s.setStatus(domain.StatusError)
-		attempt++
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status code %d", resp.StatusCode)
 	}
+
+	s.logger.Info("Connected")
+	ready()
+
+	if err := s.readLoop(ctx, resp, publish); ctx.Err() == nil {
+		// A clean EOF is not a clean outcome here: an event stream that ends on
+		// its own has ended the session, and the supervisor is about to spend
+		// an attempt on it. Returning nil would spend that attempt with nothing
+		// recorded to say why.
+		if err != nil {
+			return fmt.Errorf("stream ended: %w", err)
+		}
+		return fmt.Errorf("stream closed by %s", redactURL(s.url))
+	}
+	return nil
 }
 
 func (s *SSESource) readLoop(ctx context.Context, resp *http.Response, publish PublishFunc) error {
@@ -219,12 +173,4 @@ func (s *SSESource) readLoop(ctx context.Context, resp *http.Response, publish P
 	}
 
 	return scanner.Err()
-}
-
-// Stop cancels the context which will terminate the connection and the loop.
-func (s *SSESource) Stop() {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	s.setStatus(domain.StatusStopped)
 }

@@ -67,6 +67,16 @@ var (
 		Help: "Configured maximum number of entries in each stream's dedup LRU.",
 	}, []string{"stream_id"})
 
+	// StreamRestarts counts supervised restarts of a stream: every time a
+	// session ended and the manager spent one of the stream's restart
+	// attempts. A stream whose count climbs while its state stays
+	// "reconnecting" is flapping; one whose count stops climbing at the
+	// configured max_attempts has given up and is in "errored".
+	StreamRestarts = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nephtys_stream_restarts_total",
+		Help: "Total supervised restarts of a Nephtys stream.",
+	}, []string{"stream_id"})
+
 	// DedupCacheEvictions counts LRU evictions caused by a full cache
 	// (excludes TTL-expired entries replaced in-place). A growing rate
 	// indicates the dedup cache is undersized for the unique-payload rate.
@@ -115,6 +125,7 @@ func DeleteDedupSeries(streamID string) {
 func DeleteStreamSeries(streamID string) {
 	DeleteStreamState(streamID)
 	DeleteDedupSeries(streamID)
+	StreamRestarts.DeleteLabelValues(streamID)
 	EventsIngested.DeleteLabelValues(streamID)
 	EventsPublished.DeleteLabelValues(streamID)
 	BytesIngested.DeleteLabelValues(streamID)

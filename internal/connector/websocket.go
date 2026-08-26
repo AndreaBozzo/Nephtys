@@ -4,9 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
-	"math"
-	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -14,24 +13,17 @@ import (
 	"nephtys/internal/domain"
 )
 
-const (
-	initialBackoff = 1 * time.Second
-	maxBackoff     = 30 * time.Second
-	backoffFactor  = 2.0
-)
-
 // WebSocketSource connects to a WebSocket endpoint and emits StreamEvents.
+//
+// Reconnection is not its business: Run reads one connection and returns when
+// that connection ends. The manager's supervisor decides whether, when, and how
+// many times to run it again.
 type WebSocketSource struct {
 	id            string
 	url           string
 	topic         string
 	onConnectSend []string
 	logger        *slog.Logger
-
-	mu     sync.RWMutex
-	conn   *websocket.Conn
-	status domain.SourceStatus
-	cancel context.CancelFunc
 }
 
 // NewWebSocketSource creates a new WebSocket connector. cfg may be nil.
@@ -45,107 +37,61 @@ func NewWebSocketSource(id, url, topic string, cfg *domain.WebsocketConfig) *Web
 		url:           url,
 		topic:         topic,
 		onConnectSend: onConnectSend,
-		status:        domain.StatusIdle,
 		logger:        slog.With("connector", id),
 	}
 }
 
 func (w *WebSocketSource) ID() string { return w.id }
 
-func (w *WebSocketSource) Status() domain.SourceStatus {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.status
-}
+// Open acquires nothing: a WebSocket source holds no local resource, and the
+// dial belongs to the session rather than to registration.
+func (w *WebSocketSource) Open(context.Context) error { return nil }
 
-func (w *WebSocketSource) setStatus(s domain.SourceStatus) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.status = s
-}
+// Close releases nothing, for the same reason. The connection is owned by Run
+// and closed before it returns.
+func (w *WebSocketSource) Close() {}
 
-// Start connects to the WebSocket and reads messages in a loop.
-// It reconnects with exponential backoff on transient errors.
-// The function blocks until ctx is cancelled.
-func (w *WebSocketSource) Start(ctx context.Context, publish PublishFunc) error {
-	ctx, w.cancel = context.WithCancel(ctx)
-	attempt := 0
+// Run dials the endpoint and reads messages until the connection ends or ctx
+// is cancelled.
+func (w *WebSocketSource) Run(ctx context.Context, publish PublishFunc, ready ReadyFunc) error {
+	w.logger.Info("Connecting", "url", w.url)
 
-	for {
+	// gorilla/websocket returns the HTTP upgrade response. On success the
+	// body is owned by the conn; on failure we must close it ourselves
+	// to avoid leaking the underlying connection.
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, w.url, nil)
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return fmt.Errorf("dial %s: %w", redactURL(w.url), err)
+	}
+
+	// ReadMessage does not observe ctx, so cancellation has to reach it by
+	// closing the connection underneath it.
+	sessionOver := make(chan struct{})
+	defer close(sessionOver)
+	go func() {
 		select {
 		case <-ctx.Done():
-			w.setStatus(domain.StatusStopped)
-			w.logger.Info("Stopped")
-			return ctx.Err()
-		default:
-		}
-
-		if attempt > 0 {
-			w.setStatus(domain.StatusReconnecting)
-			backoff := time.Duration(math.Min(
-				float64(initialBackoff)*math.Pow(backoffFactor, float64(attempt-1)),
-				float64(maxBackoff),
-			))
-			w.logger.Info("Reconnecting", "attempt", attempt, "backoff", backoff)
-
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				w.setStatus(domain.StatusStopped)
-				return ctx.Err()
-			}
-		}
-
-		w.setStatus(domain.StatusConnecting)
-		w.logger.Info("Connecting", "url", w.url)
-
-		// gorilla/websocket returns the HTTP upgrade response. On success the
-		// body is owned by the conn; on failure we must close it ourselves
-		// to avoid leaking the underlying connection.
-		conn, resp, err := websocket.DefaultDialer.DialContext(ctx, w.url, nil)
-		if err != nil {
-			if resp != nil && resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			w.logger.Error("Connection failed", "error", err)
-			w.setStatus(domain.StatusError)
-			attempt++
-			continue
-		}
-
-		if err := w.sendOnConnect(conn); err != nil {
 			_ = conn.Close()
-			w.logger.Error("Post-connect send failed", "error", err)
-			w.setStatus(domain.StatusError)
-			attempt++
-			continue
+		case <-sessionOver:
 		}
+	}()
 
-		w.setStatus(domain.StatusRunning)
-		w.logger.Info("Connected")
-		attempt = 0 // reset on successful connection
+	defer func() { _ = conn.Close() }()
 
-		w.mu.Lock()
-		w.conn = conn
-		w.mu.Unlock()
-
-		err = w.readLoop(ctx, conn, publish)
-
-		w.mu.Lock()
-		w.conn = nil
-		w.mu.Unlock()
-
-		_ = conn.Close()
-
-		if ctx.Err() != nil {
-			w.setStatus(domain.StatusStopped)
-			return ctx.Err()
-		}
-
-		w.logger.Warn("Connection lost, will retry", "error", err)
-		w.setStatus(domain.StatusError)
-		attempt++
+	if err := w.sendOnConnect(conn); err != nil {
+		return fmt.Errorf("post-connect send: %w", err)
 	}
+
+	w.logger.Info("Connected")
+	ready()
+
+	if err := w.readLoop(ctx, conn, publish); err != nil && ctx.Err() == nil {
+		return fmt.Errorf("connection lost: %w", err)
+	}
+	return nil
 }
 
 // sendOnConnect writes the configured post-connect frames verbatim as text
@@ -251,16 +197,4 @@ func int64FromAny(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-// Stop cancels the source's context and forces the active connection to close, tearing down the reader goroutine.
-func (w *WebSocketSource) Stop() {
-	if w.cancel != nil {
-		w.cancel()
-	}
-	w.mu.Lock()
-	if w.conn != nil {
-		_ = w.conn.Close()
-	}
-	w.mu.Unlock()
 }

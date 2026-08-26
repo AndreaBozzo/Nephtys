@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,10 +43,6 @@ func TestRESTPollerSource(t *testing.T) {
 	if source.ID() != "test-poller" {
 		t.Errorf("Expected ID 'test-poller', got %q", source.ID())
 	}
-	if source.Status() != domain.StatusIdle {
-		t.Errorf("Expected StatusIdle, got %v", source.Status())
-	}
-
 	events := make(chan domain.StreamEvent, 5)
 	publish := func(topic string, event domain.StreamEvent) error {
 		if topic != "test-topic" {
@@ -57,10 +55,15 @@ func TestRESTPollerSource(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	if err := source.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+
 	// Run source in a goroutine
 	done := make(chan error, 1)
 	go func() {
-		done <- source.Start(ctx, publish)
+		done <- source.Run(ctx, publish, func() {})
 	}()
 
 	// Wait for an event to be published
@@ -93,20 +96,16 @@ func TestRESTPollerSource(t *testing.T) {
 	}
 
 	// Stop the source
-	source.Stop()
+	cancel()
 
 	// Wait for goroutine to exit
 	select {
 	case err := <-done:
-		if err != context.Canceled {
-			t.Errorf("Expected context.Canceled error, got %v", err)
+		if err != nil {
+			t.Errorf("Run after cancellation returned %v, want nil", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Timeout waiting for Start to return")
-	}
-
-	if source.Status() != domain.StatusStopped {
-		t.Errorf("Expected StatusStopped, got %v", source.Status())
+		t.Fatal("Timeout waiting for Run to return")
 	}
 }
 
@@ -127,7 +126,11 @@ func TestRESTPollerSource_NonJSONResponse(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = source.Start(ctx, publish) }()
+	if err := source.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+	go func() { _ = source.Run(ctx, publish, func() {}) }()
 
 	select {
 	case evt := <-events:
@@ -139,7 +142,6 @@ func TestRESTPollerSource_NonJSONResponse(t *testing.T) {
 		t.Fatal("timed out waiting for event")
 	}
 	cancel()
-	source.Stop()
 }
 
 func TestRESTPollerSource_ErrorStatus(t *testing.T) {
@@ -158,7 +160,11 @@ func TestRESTPollerSource_ErrorStatus(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = source.Start(ctx, publish) }()
+	if err := source.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+	go func() { _ = source.Run(ctx, publish, func() {}) }()
 
 	// Should not receive events on 500 status
 	select {
@@ -168,7 +174,6 @@ func TestRESTPollerSource_ErrorStatus(t *testing.T) {
 		// OK - no events expected
 	}
 	cancel()
-	source.Stop()
 }
 
 func TestRESTPollerSource_EmptyResponse(t *testing.T) {
@@ -188,7 +193,11 @@ func TestRESTPollerSource_EmptyResponse(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = source.Start(ctx, publish) }()
+	if err := source.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+	go func() { _ = source.Run(ctx, publish, func() {}) }()
 
 	// Should not receive events for empty body
 	select {
@@ -198,21 +207,105 @@ func TestRESTPollerSource_EmptyResponse(t *testing.T) {
 		// OK
 	}
 	cancel()
-	source.Stop()
 }
 
+// TestRESTPollerSource_InvalidInterval checks the one local resource this
+// source acquires. An unparseable interval is a property of the config, so it
+// belongs to Open, where whoever registered the stream is still waiting for an
+// answer.
 func TestRESTPollerSource_InvalidInterval(t *testing.T) {
-	config := &domain.RestPollerConfig{
-		Interval: "invalid",
-	}
+	source := connector.NewRESTPollerSource("test", "http://example.com", "topic",
+		&domain.RestPollerConfig{Interval: "invalid"})
 
-	source := connector.NewRESTPollerSource("test", "http://example.com", "topic", config)
-	err := source.Start(context.Background(), func(t string, e domain.StreamEvent) error { return nil })
-
+	err := source.Open(context.Background())
 	if err == nil {
 		t.Fatal("Expected error for invalid interval, got nil")
 	}
-	if source.Status() != domain.StatusError {
-		t.Errorf("Expected StatusError, got %v", source.Status())
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("error %q does not name the offending value", err)
+	}
+}
+
+// TestRESTPollerSource_ReadyAfterFirstSuccessfulPoll pins where readiness
+// comes from. Reporting it on entry would mean a poller claims to be running
+// before it has ever reached its endpoint, which is the one connector that
+// used to do that.
+func TestRESTPollerSource_ReadyAfterFirstSuccessfulPoll(t *testing.T) {
+	polled := make(chan struct{}, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+		_, _ = w.Write([]byte(`{"message":"hello"}`))
+	}))
+	defer ts.Close()
+
+	source := connector.NewRESTPollerSource("poller-ready", ts.URL, "test.topic",
+		&domain.RestPollerConfig{Interval: "1h", Method: "GET"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := source.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+
+	ready := make(chan struct{})
+	go func() {
+		_ = source.Run(ctx, func(string, domain.StreamEvent) error { return nil }, func() { close(ready) })
+	}()
+
+	select {
+	case <-polled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source never polled")
+	}
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source polled successfully but never reported ready")
+	}
+}
+
+// TestRESTPollerSource_NotReadyWhileEndpointFails is the other half: a poller
+// whose URL never answers must not report itself running. Its stream stays
+// connecting, so nothing reports it healthy while it has ingested nothing.
+func TestRESTPollerSource_NotReadyWhileEndpointFails(t *testing.T) {
+	attempts := make(chan struct{}, 4)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case attempts <- struct{}{}:
+		default:
+		}
+		http.Error(w, "gone", http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	source := connector.NewRESTPollerSource("poller-404", ts.URL, "test.topic",
+		&domain.RestPollerConfig{Interval: "20ms", Method: "GET"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := source.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+
+	var reported atomic.Bool
+	go func() {
+		_ = source.Run(ctx, func(string, domain.StreamEvent) error { return nil }, func() { reported.Store(true) })
+	}()
+
+	// Several polls have to have been attempted and refused.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-attempts:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d poll attempts reached the endpoint", i)
+		}
+	}
+	if reported.Load() {
+		t.Error("source reported ready while every poll was failing")
 	}
 }

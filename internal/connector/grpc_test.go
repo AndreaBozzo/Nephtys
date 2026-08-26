@@ -2,6 +2,8 @@ package connector
 
 import (
 	"context"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,21 +14,64 @@ import (
 	pb "nephtys/internal/grpc/streamer"
 )
 
-func TestGrpcSource_IDAndStatus(t *testing.T) {
+func TestGrpcSource_IDAndDefaults(t *testing.T) {
 	src := NewGrpcSource("grpc-id-test", "topic", nil)
 	if src.ID() != "grpc-id-test" {
 		t.Errorf("expected grpc-id-test, got %s", src.ID())
 	}
-	if src.Status() != domain.StatusIdle {
-		t.Errorf("expected idle, got %s", src.Status())
+	if src.config.Port != "50051" {
+		t.Errorf("expected default port 50051, got %s", src.config.Port)
+	}
+	if src.Addr() != nil {
+		t.Errorf("a source that has not been opened reports address %v", src.Addr())
+	}
+}
+
+// TestGrpcSource_OpenReportsBindFailure is the connector half of the
+// registration contract: a port that is already taken has to fail in Open,
+// synchronously, so the caller that registered the stream is the one told.
+func TestGrpcSource_OpenReportsBindFailure(t *testing.T) {
+	// Bind the wildcard address, the same one the source binds. Holding only
+	// 127.0.0.1:P does not conflict with 0.0.0.0:P on every platform, so a
+	// loopback holder would make this test pass for the wrong reason.
+	holder, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("bind holder: %v", err)
+	}
+	defer func() { _ = holder.Close() }()
+
+	_, port, err := net.SplitHostPort(holder.Addr().String())
+	if err != nil {
+		t.Fatalf("split holder addr: %v", err)
+	}
+
+	src := NewGrpcSource("taken", "topic", &domain.GrpcConfig{Port: port})
+	err = src.Open(context.Background())
+	if err == nil {
+		src.Close()
+		t.Fatal("Open on a port held by another listener returned nil")
+	}
+	if !strings.Contains(err.Error(), port) {
+		t.Errorf("Open error %q does not name the port %s", err, port)
+	}
+}
+
+// TestGrpcSource_RunWithoutOpen guards the ordering the manager relies on.
+func TestGrpcSource_RunWithoutOpen(t *testing.T) {
+	src := NewGrpcSource("no-open", "topic", nil)
+	err := src.Run(context.Background(), func(string, domain.StreamEvent) error { return nil }, func() {})
+	if err == nil {
+		t.Fatal("Run without Open returned nil")
 	}
 }
 
 func TestGrpcSource_StreamEvents(t *testing.T) {
-	config := &domain.GrpcConfig{
-		Port: "50055", // Hardcoded port for test
+	// Port 0: the OS picks a free one, so a busy port cannot flake the test.
+	src := NewGrpcSource("test-grpc-stream", "test-topic", &domain.GrpcConfig{Port: "0"})
+	if err := src.Open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
 	}
-	src := NewGrpcSource("test-grpc-stream", "test-topic", config)
+	defer src.Close()
 
 	// Channel to capture published events
 	published := make(chan domain.StreamEvent, 10)
@@ -41,17 +86,21 @@ func TestGrpcSource_StreamEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start the source in a goroutine
+	// Run the session in a goroutine and wait for it to report itself live.
+	ready := make(chan struct{})
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- src.Start(ctx, publishFunc)
+		errCh <- src.Run(ctx, publishFunc, func() { close(ready) })
 	}()
 
-	// Wait for the server to spin up
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source never reported ready")
+	}
 
 	// Connect a gRPC client
-	conn, err := grpc.NewClient("localhost:50055", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(src.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
@@ -109,15 +158,15 @@ func TestGrpcSource_StreamEvents(t *testing.T) {
 	}
 
 	// Tell the source to stop
-	src.Stop()
+	cancel()
 
-	// Wait for Start to return
+	// Wait for Run to return
 	select {
 	case err := <-errCh:
-		if err != nil && err != context.Canceled {
-			t.Errorf("expected Canceled error, got %v", err)
+		if err != nil {
+			t.Errorf("Run after cancellation returned %v, want nil", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Start did not return after Stop")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancellation")
 	}
 }

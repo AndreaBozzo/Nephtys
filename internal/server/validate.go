@@ -113,6 +113,10 @@ func validateStreamConfig(cfg domain.StreamSourceConfig) error {
 		return err
 	}
 
+	if err := validateRestart(cfg.Restart); err != nil {
+		return err
+	}
+
 	return pipeline.ValidateConfig(cfg.Pipeline)
 }
 
@@ -191,6 +195,68 @@ func validateConnector(cfg domain.StreamSourceConfig) error {
 	}
 
 	return nil
+}
+
+// validateRestart checks the per-stream restart policy. Every field is
+// optional, and an omitted field means "no opinion" — the stream takes the
+// default for its kind.
+func validateRestart(rc *domain.RestartConfig) error {
+	if rc == nil {
+		return nil
+	}
+
+	if rc.MaxAttempts != nil && *rc.MaxAttempts < 0 {
+		return fmt.Errorf("restart.max_attempts: must not be negative (omit the field for unlimited restarts, or set 0 to never restart)")
+	}
+	if rc.Factor != 0 && rc.Factor < 1 {
+		return fmt.Errorf("restart.factor: must be at least 1, got %v", rc.Factor)
+	}
+
+	initial, err := validateRestartDuration("restart.initial_backoff", rc.InitialBackoff)
+	if err != nil {
+		return err
+	}
+	maximum, err := validateRestartDuration("restart.max_backoff", rc.MaxBackoff)
+	if err != nil {
+		return err
+	}
+	if _, err := validateRestartDuration("restart.reset_after", rc.ResetAfter); err != nil {
+		return err
+	}
+
+	// Compare what the stream will actually run, not only what was written.
+	// An omitted field takes its default, so "max_backoff": "500ms" on its own
+	// asks for a cap below the 1s default floor — a config whose explicit value
+	// cannot be honoured, which this contract rejects rather than quietly
+	// reinterprets.
+	effectiveInitial := defaultInitialBackoff
+	if initial > 0 {
+		effectiveInitial = initial
+	}
+	effectiveMax := defaultMaxBackoff
+	if maximum > 0 {
+		effectiveMax = maximum
+	}
+	if effectiveMax < effectiveInitial {
+		return fmt.Errorf(
+			"restart: max_backoff %s is shorter than initial_backoff %s (omitted fields take their defaults: initial_backoff %s, max_backoff %s)",
+			effectiveMax, effectiveInitial, defaultInitialBackoff, defaultMaxBackoff)
+	}
+	return nil
+}
+
+func validateRestartDuration(path, raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a valid duration (want a unit suffix, e.g. \"5s\", \"1m\")", path, raw)
+	}
+	if parsed <= 0 {
+		return 0, fmt.Errorf("%s: must be positive, got %q", path, raw)
+	}
+	return parsed, nil
 }
 
 // validatePollInterval checks rest_poller.interval at config time. Unparseable
