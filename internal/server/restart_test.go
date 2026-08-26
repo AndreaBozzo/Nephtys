@@ -1,16 +1,17 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"nephtys/internal/domain"
 )
 
-// TestRestartPolicyDefaults pins the backward-compatible defaults. A stream
-// registered before restart policies existed has to behave exactly as it did:
-// the pull connectors retried forever on a 1s→30s ladder, and a push connector
-// that lost its listener stayed down.
+// TestRestartPolicyDefaults pins the per-kind defaults. The pull connectors
+// keep exactly what they had when they retried internally — forever, on a
+// 1s→30s ladder. The push connectors gain a small bounded budget: a lost
+// listener used to be terminal on the first failure and needed a human.
 func TestRestartPolicyDefaults(t *testing.T) {
 	tests := []struct {
 		kind        string
@@ -19,8 +20,8 @@ func TestRestartPolicyDefaults(t *testing.T) {
 		{"websocket", unlimitedAttempts},
 		{"sse", unlimitedAttempts},
 		{"rest_poller", unlimitedAttempts},
-		{"webhook", 0},
-		{"grpc", 0},
+		{"webhook", defaultPushAttempts},
+		{"grpc", defaultPushAttempts},
 	}
 
 	for _, tt := range tests {
@@ -110,18 +111,48 @@ func TestRestartPolicyDelayLadder(t *testing.T) {
 	}
 }
 
-// TestRestartPolicyMaxBackoffFloor keeps a config that sets a max below the
-// initial from producing a ladder that shrinks.
-func TestRestartPolicyMaxBackoffFloor(t *testing.T) {
+// TestValidateRestartComparesEffectiveLadder covers the case an explicit-only
+// comparison misses. "max_backoff": "500ms" alone asks for a cap under the 1s
+// default initial backoff; the resolver would have to widen it back to 1s,
+// which is a silent reinterpretation of a value the operator wrote.
+func TestValidateRestartComparesEffectiveLadder(t *testing.T) {
+	err := validateRestart(&domain.RestartConfig{MaxBackoff: "500ms"})
+	if err == nil {
+		t.Fatal("a max_backoff below the default initial_backoff passed validation")
+	}
+	if !strings.Contains(err.Error(), "initial_backoff") {
+		t.Errorf("error %q does not explain which field it conflicts with", err)
+	}
+
+	// The mirror case: an initial above the default max is the same conflict
+	// seen from the other side.
+	if err := validateRestart(&domain.RestartConfig{InitialBackoff: "5m"}); err == nil {
+		t.Error("an initial_backoff above the default max_backoff passed validation")
+	}
+
+	// And a ladder that grows is accepted whichever half is written.
+	if err := validateRestart(&domain.RestartConfig{MaxBackoff: "5m"}); err != nil {
+		t.Errorf("a wider max_backoff was rejected: %v", err)
+	}
+}
+
+// TestRestartPolicyLadderAlwaysGrows states the invariant the validator now
+// guarantees: every config that reaches the resolver has max >= initial.
+func TestRestartPolicyLadderAlwaysGrows(t *testing.T) {
 	policy := restartPolicyFor(domain.StreamSourceConfig{
 		Kind:    "websocket",
-		Restart: &domain.RestartConfig{InitialBackoff: "5s", MaxBackoff: "1s"},
+		Restart: &domain.RestartConfig{InitialBackoff: "2s", MaxBackoff: "8s"},
 	})
-	if policy.maxBackoff != 5*time.Second {
-		t.Errorf("max_backoff = %s, want it raised to the initial 5s", policy.maxBackoff)
-	}
-	if got := policy.delay(3); got != 5*time.Second {
-		t.Errorf("delay(3) = %s, want 5s", got)
+	previous := time.Duration(0)
+	for attempt := 1; attempt <= 6; attempt++ {
+		got := policy.delay(attempt)
+		if got < previous {
+			t.Fatalf("delay(%d) = %s, shorter than the previous %s", attempt, got, previous)
+		}
+		if got > 8*time.Second {
+			t.Fatalf("delay(%d) = %s, above the configured cap", attempt, got)
+		}
+		previous = got
 	}
 }
 

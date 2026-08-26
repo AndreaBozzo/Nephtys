@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,37 @@ func TestSSESource_Success(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Timeout waiting for Run to return")
+	}
+}
+
+// TestSSESource_CleanEOFEndsSessionWithAReason covers an event stream that
+// simply ends. The scanner reports no error, but the session is over and the
+// supervisor is about to spend an attempt on it — returning nil would spend
+// that attempt with nothing recorded to say why, leaving a stream that can
+// reach a terminal state with an empty last_error.
+func TestSSESource_CleanEOFEndsSessionWithAReason(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if _, err := fmt.Fprint(w, "data: {\"n\":1}\n\n"); err != nil {
+			t.Errorf("write event: %v", err)
+		}
+		// Returning closes the body: a clean end of stream.
+	}))
+	defer ts.Close()
+
+	// A token in the query string is the thing that must not come back out in
+	// the error, since last_error is served over the API.
+	source := connector.NewSSESource("sse-eof", ts.URL+"?apikey=TOPSECRET", "test.topic", nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := source.Run(ctx, func(string, domain.StreamEvent) error { return nil }, func() {})
+	if err == nil {
+		t.Fatal("a stream that ended on its own reported no error")
+	}
+	if strings.Contains(err.Error(), "TOPSECRET") {
+		t.Errorf("error %q leaks the endpoint credential", err)
 	}
 }
 

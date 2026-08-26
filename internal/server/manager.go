@@ -5,7 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,7 +99,13 @@ func NewStreamManager(brk *broker.Broker, st configStore) *StreamManager {
 	}
 }
 
-// StreamInfo is the API representation of a running stream.
+// StreamInfo is the API representation of a registered stream.
+//
+// RestartCount is cumulative over the stream's whole life, so it only ever
+// grows. It is not the stream's position in its current restart budget: that
+// resets whenever a session stays up long enough to earn its attempts back, and
+// a field named restart_count that can decrease would be a poor thing to have
+// to keep compatible.
 type StreamInfo struct {
 	ID            string              `json:"id"`
 	Status        domain.SourceStatus `json:"status"`
@@ -116,6 +126,12 @@ type streamRuntime struct {
 	restarts            atomic.Int64
 	lastError           atomic.Pointer[streamFailure]
 }
+
+// errSessionClosed stands in when a session ends without an error of its own —
+// a clean EOF from a source that was supposed to stay open. A stream that gives
+// up has to be able to say why, so the failure contract cannot depend on every
+// connector remembering to return something.
+var errSessionClosed = errors.New("session ended without reporting an error")
 
 type streamFailure struct {
 	message string
@@ -138,11 +154,44 @@ func (r *streamRuntime) setStatus(id string, status domain.SourceStatus) {
 	telemetry.SetStreamState(id, metricState(status))
 }
 
+// recordFailure stores the reason a session or an acquisition failed, in the
+// form the API is allowed to serve. A nil error still records something: a
+// stream that gives up has to be able to say why, and that cannot depend on
+// every connector remembering to return an error when its session ends.
 func (r *streamRuntime) recordFailure(err error, at time.Time) {
 	if err == nil {
-		return
+		err = errSessionClosed
 	}
-	r.lastError.Store(&streamFailure{message: err.Error(), at: at})
+	r.lastError.Store(&streamFailure{message: redactForAPI(err.Error()), at: at})
+}
+
+// urlInMessage matches a URL embedded in an error string. Connector errors
+// quote the configured endpoint, and net/http quotes it for us in url.Error.
+var urlInMessage = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s"']+`)
+
+// redactForAPI strips credentials from any URL inside an error message.
+//
+// last_error is served by GET /v1/streams, whose auth is optional, so it is a
+// path from connector errors to whoever can reach the API. Endpoint URLs
+// routinely carry tokens in a query string or in userinfo, and neither is
+// needed to tell an operator which endpoint failed. The unredacted error still
+// goes to the log, which is not served over HTTP.
+func redactForAPI(message string) string {
+	return urlInMessage.ReplaceAllStringFunc(message, func(raw string) string {
+		// Error text tends to end a URL with punctuation. Keep it out of the
+		// parse and put it back afterwards.
+		trimmed := strings.TrimRight(raw, `.,;:!?)]}`)
+		suffix := raw[len(trimmed):]
+
+		parsed, err := url.Parse(trimmed)
+		if err != nil || parsed.Host == "" {
+			return raw
+		}
+		parsed.User = nil
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String() + suffix
+	})
 }
 
 // Errors the manager returns for conditions the REST layer maps to a specific
@@ -311,6 +360,14 @@ func (m *StreamManager) supervise(
 				return
 			}
 			if err := source.Open(ctx); err != nil {
+				// Acquisition can fail because the operator is stopping the
+				// stream. Cancellation is not a failed attempt: without this
+				// check a removal racing a restart would spend budget and
+				// could leave the stream reported as errored on its way out.
+				if ctx.Err() != nil {
+					runtime.setStatus(id, domain.StatusStopped)
+					return
+				}
 				m.logger.Warn("Restart could not acquire resources", "id", id, "attempt", attempt, "error", err)
 				runtime.recordFailure(err, m.now())
 				next, ok := policy.next(attempt)
@@ -319,7 +376,7 @@ func (m *StreamManager) supervise(
 					return
 				}
 				attempt = next
-				runtime.restarts.Store(int64(attempt))
+				runtime.restarts.Add(1)
 				telemetry.StreamRestarts.WithLabelValues(id).Inc()
 				continue
 			}
@@ -348,8 +405,10 @@ func (m *StreamManager) supervise(
 			// otherwise never exhaust any budget.
 			attempt = 0
 		}
-		runtime.recordFailure(runErr, m.now())
+		// The log keeps the connector's own error, unredacted; the runtime
+		// keeps a reason the API can serve, which is never empty.
 		m.logger.Warn("Stream session ended", "id", id, "error", runErr)
+		runtime.recordFailure(runErr, m.now())
 
 		next, ok := policy.next(attempt)
 		if !ok {
@@ -357,7 +416,7 @@ func (m *StreamManager) supervise(
 			return
 		}
 		attempt = next
-		runtime.restarts.Store(int64(attempt))
+		runtime.restarts.Add(1)
 		telemetry.StreamRestarts.WithLabelValues(id).Inc()
 	}
 }
@@ -676,8 +735,11 @@ func (m *StreamManager) StopAll() {
 	for _, ref := range m.generations {
 		ref.Load().Retire()
 	}
+	// Every per-stream series, not just the state gauge: after StopAll the
+	// manager holds no streams, so leaving counters behind would report on
+	// streams that no longer exist if the process outlives the shutdown.
 	for id := range m.runtimes {
-		telemetry.DeleteStreamState(id)
+		telemetry.DeleteStreamSeries(id)
 	}
 
 	m.generations = make(map[string]*atomic.Pointer[pipeline.Generation])
@@ -706,17 +768,32 @@ func connectorPort(cfg domain.StreamSourceConfig) string {
 	switch cfg.Kind {
 	case "webhook":
 		if cfg.Webhook != nil && cfg.Webhook.Port != "" {
-			return cfg.Webhook.Port
+			return canonicalPort(cfg.Webhook.Port)
 		}
 		return "8081" // the default NewWebhookSource applies
 	case "grpc":
 		if cfg.Grpc != nil && cfg.Grpc.Port != "" {
-			return cfg.Grpc.Port
+			return canonicalPort(cfg.Grpc.Port)
 		}
 		return "50051" // the default NewGrpcSource applies
 	default:
 		return ""
 	}
+}
+
+// canonicalPort normalises a port so two spellings of one port cannot hold two
+// different claims. The validator accepts "8081" and "08081" alike — Atoi does
+// — and both bind the same socket, so keying claims on the raw string would let
+// the second stream past the registry and into a bind failure that cannot name
+// the holder.
+func canonicalPort(raw string) string {
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		// Not a number: the validator rejects this before a claim is made, and
+		// binding it will fail too. Key it on what was written.
+		return raw
+	}
+	return strconv.Itoa(port)
 }
 
 func sourceHealth(status domain.SourceStatus) string {

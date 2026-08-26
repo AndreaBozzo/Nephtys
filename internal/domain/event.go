@@ -84,10 +84,11 @@ type StreamSourceConfig struct {
 // policies existed.
 type RestartConfig struct {
 	// MaxAttempts caps consecutive restarts before the stream is marked
-	// failed. Omitted means unlimited; 0 means never restart. A pointer is
-	// what separates those two: encoding "unlimited" as the zero value would
-	// give an operator who writes 0 to mean "leave it down" the opposite of
-	// what they asked for.
+	// failed. Omitting it takes the default for the stream's kind — unlimited
+	// for the pull connectors, a small bounded budget for the push ones — and
+	// 0 means never restart. A pointer is what separates those two: encoding
+	// "take the default" as the zero value would give an operator who writes 0
+	// to mean "leave it down" the opposite of what they asked for.
 	MaxAttempts *int `json:"max_attempts,omitempty"`
 
 	// InitialBackoff is the delay before the first restart, e.g. "1s".

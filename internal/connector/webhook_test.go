@@ -255,6 +255,137 @@ func TestWebhookSource_OpenReportsBindFailure(t *testing.T) {
 	}
 }
 
+// TestWebhookSource_StuckHandlerDoesNotOutliveTheSession covers the shutdown
+// escalation. A handler that is still running when the grace period expires
+// would otherwise keep publishing after Run returned — into a pipeline the
+// manager may already be retiring, on a stream it may already have removed. The
+// session has to end anyway, with the connections forced closed.
+func TestWebhookSource_StuckHandlerDoesNotOutliveTheSession(t *testing.T) {
+	source := NewWebhookSource("stuck-handler", "test.topic", &domain.WebhookConfig{
+		Port: "0",
+		Path: "/hook",
+	})
+	source.shutdownGrace = 100 * time.Millisecond
+
+	if err := source.Open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	addr := source.Addr().String()
+
+	// The handler blocks until the test releases it, which is what a publish
+	// wedged on an unreachable broker looks like from here.
+	release := make(chan struct{})
+	defer close(release)
+	entered := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ready := make(chan struct{})
+	runReturned := make(chan error, 1)
+	go func() {
+		runReturned <- source.Run(ctx, func(string, domain.StreamEvent) error {
+			close(entered)
+			<-release
+			return nil
+		}, func() { close(ready) })
+	}()
+
+	<-ready
+
+	postDone := make(chan error, 1)
+	go func() {
+		res, err := http.Post("http://"+addr+"/hook", "application/json", strings.NewReader(`{"a":1}`))
+		if err == nil {
+			_ = res.Body.Close()
+		}
+		postDone <- err
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never ran")
+	}
+
+	// Stop the session while the handler is still inside publish.
+	cancel()
+
+	select {
+	case err := <-runReturned:
+		if err != nil {
+			t.Errorf("Run after cancellation returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return: a stuck handler held the session open past its grace period")
+	}
+
+	// The in-flight connection has to be gone too. Graceful shutdown alone
+	// leaves it open for as long as the handler runs, which is what the
+	// escalation to Close exists to bound.
+	select {
+	case err := <-postDone:
+		if err == nil {
+			t.Error("the in-flight request completed normally; its connection should have been closed with the session")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("in-flight connection outlived the session: shutdown did not escalate to closing it")
+	}
+
+	// The listener has to be released, or the port could not be rebound by a
+	// restart.
+	source.Close()
+	probe, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("port was not released after the session ended: %v", err)
+	}
+	_ = probe.Close()
+}
+
+// TestWebhookSource_LostListenerEndsTheSession covers the failure the restart
+// policy exists for: the listener goes away underneath a running server, so
+// Serve returns an error and the session ends with a reason rather than
+// quietly continuing to report itself alive.
+func TestWebhookSource_LostListenerEndsTheSession(t *testing.T) {
+	source := NewWebhookSource("lost-listener", "test.topic", &domain.WebhookConfig{
+		Port: "0",
+		Path: "/hook",
+	})
+	if err := source.Open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ready := make(chan struct{})
+	runReturned := make(chan error, 1)
+	go func() {
+		runReturned <- source.Run(ctx, func(string, domain.StreamEvent) error { return nil }, func() { close(ready) })
+	}()
+
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source never reported ready")
+	}
+
+	// Take the listener away, the way a lost bind would.
+	if err := source.listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	select {
+	case err := <-runReturned:
+		if err == nil {
+			t.Error("Run returned nil after its listener was closed; the session ended with no reason")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its listener was closed")
+	}
+}
+
 // TestWebhookSource_RunWithoutOpen guards the ordering the manager relies on.
 func TestWebhookSource_RunWithoutOpen(t *testing.T) {
 	source := NewWebhookSource("no-open", "test.topic", nil)

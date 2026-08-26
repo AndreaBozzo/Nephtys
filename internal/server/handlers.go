@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"nephtys/internal/domain"
 	"nephtys/internal/pipeline"
 )
 
@@ -60,7 +61,16 @@ func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 	// durable. Report the lifecycle state alongside the legacy "started" so a
 	// caller can tell an already-connected stream from one still dialling,
 	// rather than inferring either from the status code.
-	state, _ := s.manager.StatusOf(cfg.ID)
+	//
+	// This is a snapshot, not a promise about the future: the supervisor runs
+	// concurrently, so the stream may have moved on — or been deleted by
+	// another request — by the time the body is written. Admission installs a
+	// stream as connecting, which is what an unknown id falls back to rather
+	// than an empty field.
+	state := domain.StatusConnecting
+	if current, ok := s.manager.StatusOf(cfg.ID); ok {
+		state = current
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":     cfg.ID,
 		"status": "started",

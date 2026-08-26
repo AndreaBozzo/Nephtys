@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,7 +226,11 @@ func TestRESTPollerSource_InvalidInterval(t *testing.T) {
 	}
 }
 
-func TestRESTPollerSource_ReadyBeforeFirstPoll(t *testing.T) {
+// TestRESTPollerSource_ReadyAfterFirstSuccessfulPoll pins where readiness
+// comes from. Reporting it on entry would mean a poller claims to be running
+// before it has ever reached its endpoint, which is the one connector that
+// used to do that.
+func TestRESTPollerSource_ReadyAfterFirstSuccessfulPoll(t *testing.T) {
 	polled := make(chan struct{}, 1)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -252,13 +257,55 @@ func TestRESTPollerSource_ReadyBeforeFirstPoll(t *testing.T) {
 	}()
 
 	select {
-	case <-ready:
-	case <-time.After(2 * time.Second):
-		t.Fatal("source never reported ready")
-	}
-	select {
 	case <-polled:
 	case <-time.After(2 * time.Second):
-		t.Fatal("source reported ready but never polled")
+		t.Fatal("source never polled")
+	}
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source polled successfully but never reported ready")
+	}
+}
+
+// TestRESTPollerSource_NotReadyWhileEndpointFails is the other half: a poller
+// whose URL never answers must not report itself running. Its stream stays
+// connecting, so nothing reports it healthy while it has ingested nothing.
+func TestRESTPollerSource_NotReadyWhileEndpointFails(t *testing.T) {
+	attempts := make(chan struct{}, 4)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case attempts <- struct{}{}:
+		default:
+		}
+		http.Error(w, "gone", http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	source := connector.NewRESTPollerSource("poller-404", ts.URL, "test.topic",
+		&domain.RestPollerConfig{Interval: "20ms", Method: "GET"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := source.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer source.Close()
+
+	var reported atomic.Bool
+	go func() {
+		_ = source.Run(ctx, func(string, domain.StreamEvent) error { return nil }, func() { reported.Store(true) })
+	}()
+
+	// Several polls have to have been attempted and refused.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-attempts:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d poll attempts reached the endpoint", i)
+		}
+	}
+	if reported.Load() {
+		t.Error("source reported ready while every poll was failing")
 	}
 }

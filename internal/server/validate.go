@@ -224,8 +224,23 @@ func validateRestart(rc *domain.RestartConfig) error {
 		return err
 	}
 
-	if initial > 0 && maximum > 0 && maximum < initial {
-		return fmt.Errorf("restart.max_backoff: %q is shorter than restart.initial_backoff %q", rc.MaxBackoff, rc.InitialBackoff)
+	// Compare what the stream will actually run, not only what was written.
+	// An omitted field takes its default, so "max_backoff": "500ms" on its own
+	// asks for a cap below the 1s default floor — a config whose explicit value
+	// cannot be honoured, which this contract rejects rather than quietly
+	// reinterprets.
+	effectiveInitial := defaultInitialBackoff
+	if initial > 0 {
+		effectiveInitial = initial
+	}
+	effectiveMax := defaultMaxBackoff
+	if maximum > 0 {
+		effectiveMax = maximum
+	}
+	if effectiveMax < effectiveInitial {
+		return fmt.Errorf(
+			"restart: max_backoff %s is shorter than initial_backoff %s (omitted fields take their defaults: initial_backoff %s, max_backoff %s)",
+			effectiveMax, effectiveInitial, defaultInitialBackoff, defaultMaxBackoff)
 	}
 	return nil
 }

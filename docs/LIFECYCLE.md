@@ -122,7 +122,13 @@ about the connector.
 | `grpc` | `net.Listen(":"+port)` | `srv.Serve(lis)` | on entry | `Serve` returns an error |
 | `websocket` | nothing — no local resource | dial, then read loop | after handshake and `on_connect_send` | read error or EOF |
 | `sse` | nothing | one GET, then frame scan | after 2xx | scanner error or EOF |
-| `rest_poller` | parsed interval | ticker loop | on entry | cancellation only (see §9) |
+| `rest_poller` | parsed interval | ticker loop | after the first poll that reaches the endpoint | cancellation only |
+
+`rest_poller` reports ready after its first poll that reaches the endpoint, not
+on entry. It is the one connector whose readiness is not a handshake, and
+reporting it on entry meant a poller with a dead URL read as `running` and
+`healthy` having never ingested anything. An answer that carried no rows still
+counts: an empty `200` proves the URL is live.
 
 **`Open` performs no remote I/O.** That rule is what lets the manager hold its
 lock across it and lets a registration request block on it. It also decides
@@ -157,8 +163,12 @@ failure.
 
 **A 201 now means:** the id is unique, the config is valid and durable, every
 local resource the stream needs is held, and a supervisor owns it. It does not
-mean an upstream is connected. The response body carries a `state` field
-(`connecting` or `running`) next to the existing `status: "started"`.
+mean an upstream is connected. The response body carries a `state` field next to
+the existing `status: "started"` — usually `connecting`, or `running` for a
+source whose session is live as soon as it starts. It is a snapshot taken as the
+response is written, not a promise: the supervisor runs concurrently, so a
+fast-failing source can already read `reconnecting`. Poll `GET /v1/streams` for
+the current state rather than treating this field as one.
 
 ### Registration outcomes
 
@@ -261,10 +271,19 @@ exhausts a five-attempt budget; a flapping one reaches `failed` in seconds.
 }
 ```
 
-Every field is optional and validated by `--config-check`. `max_attempts` is a
-pointer in Go: absent means unlimited, `0` means never restart, negative is
-rejected. Encoding "unlimited" as `0` would give an operator who writes `0` to
-mean "leave it down" the opposite of what they asked for.
+Every field is optional and validated by `--config-check`. An omitted field
+takes the default for the stream's kind, which for `max_attempts` means
+unlimited on `websocket`/`sse` and five on `webhook`/`grpc` — not unlimited
+everywhere. `max_attempts` is a pointer in Go so that `0`, meaning never
+restart, stays distinguishable from "take the default"; encoding the default as
+the zero value would give an operator who writes `0` to mean "leave it down" the
+opposite of what they asked for.
+
+Validation compares the *effective* ladder rather than only what was written, so
+`{"max_backoff": "500ms"}` on its own is rejected: it asks for a cap below the
+1s default `initial_backoff`, and silently widening it back to 1s would be the
+kind of reinterpretation of an explicit value this configuration contract does
+not do.
 
 ### Defaults preserve existing behaviour
 
@@ -272,18 +291,35 @@ mean "leave it down" the opposite of what they asked for.
 | --- | --- | --- | --- |
 | `websocket`, `sse` | unlimited, 1s→30s ×2, reset 60s | unlimited, 1s→30s ×2, reset on connect | yes, apart from the reset rule |
 | `rest_poller` | policy inert — no session ends on its own | retries on the next tick | yes |
-| `webhook`, `grpc` | `max_attempts: 0` | terminal on first failure | yes |
+| `webhook`, `grpc` | `max_attempts: 5` | terminal on first failure | no — see below |
 
-Push connectors default to no restart deliberately. Rebinding is now possible,
-but making it the default would change a documented contract in the same release
-that makes it configurable. Operators opt in by writing a policy.
+Push connectors are the one deliberate behaviour change. Losing a listener used
+to be terminal on the first failure, with the README telling operators to remove
+and re-register the stream by hand. What that preserved was a documented
+limitation rather than a contract anyone builds against — nothing depends on a
+webhook staying down — so the default is now five attempts: it rebinds through a
+transient loss, and a port that is genuinely gone still reaches the same errored
+terminal state about half a minute later. Set `max_attempts: 0` for the old
+behaviour.
 
 ### Giving up
 
 A stream that spends its budget goes to `failed` and stays registered: config
 persisted, port claim held, listed by `GET /v1/streams` as `status: error` /
 `health: errored`, gauge on `errored`, with `restart_count`, `last_error` and
-`last_error_at` to say why. Unregistering it would lose the reason it failed and
+`last_error_at` to say why.
+
+`restart_count` is cumulative over the stream's whole life, so it only grows —
+it is not the stream's position in its current budget, which resets each time a
+session earns its attempts back. A failed stream always carries a reason: a
+session that ends without an error of its own still records one, so the contract
+does not depend on every connector remembering to return something.
+
+`last_error` is redacted before it is stored. It is served by `GET /v1/streams`,
+whose auth is optional, and connector errors quote the endpoint that failed —
+which routinely carries a token in a query string or in userinfo. The query,
+fragment and userinfo are stripped from any URL in the message; the log keeps
+the connector's error intact, and the log is not served over HTTP. Unregistering it would lose the reason it failed and
 put the runtime out of step with the stored config, which is the divergence
 `UpdatePipeline` and `Remove` already avoid. Recovery is `DELETE` then `POST`; a
 dedicated restart endpoint is a reasonable follow-up and is not in this scope.
@@ -362,6 +398,15 @@ it covers.
 | `TestNoStreamRunsWhileItsListenerIsUnbound` | admission waiting for `Open` | — |
 | `TestSupervisor_FlapWithinResetWindowExhaustsBudget` | the uptime-based reset | the ladder itself |
 | `TestSupervisor_UptimeEarnsBudgetBack` | — (passes under either reset rule) | pair it with the flap test |
+| `TestRESTPollerSource_NotReadyWhileEndpointFails` | readiness deferred to a successful poll | the restart policy, which is inert for pollers |
+| `TestSSESource_CleanEOFEndsSessionWithAReason` | a clean end-of-stream reported as a session failure | the redaction, which the same test also asserts |
+| `TestLastErrorIsRedacted` | credential stripping on the way into the API | the connector-side redaction of dial errors |
+| `TestFailedStreamAlwaysReportsAReason` | the stand-in reason for a session that ends with nil | which connector produced the nil |
+| `TestCancellationDuringReacquireStopsRatherThanFails` | the cancellation check after a restart's `Open` | the same check after `Run`, which is separate |
+| `TestPortClaimIsCanonical` | canonical port keys | the bind itself, which catches the conflict either way but cannot name the holder |
+| `TestStopAllClearsEveryStreamSeries` | full series cleanup on `StopAll` | `Remove`, which always cleaned up fully |
+| `TestValidateRestartComparesEffectiveLadder` | validating the ladder after defaults are applied | the explicit-vs-explicit case, which was already rejected |
+| `TestWebhookSource_StuckHandlerDoesNotOutliveTheSession` | escalating a timed-out shutdown to closing connections | the handler goroutine, which nothing can stop |
 | `TestRestore_UnbindableStreamStaysVisible` | restore registering failures | the sort order |
 | `TestRestore_AdmitsInSortedOrder` | the sort, and restore registering failures | — |
 
@@ -371,18 +416,26 @@ exercised without waiting for either. The scripted test source parks on its
 context once its script runs out, so a supervisor that restarts more often than
 expected fails on the count rather than spinning.
 
-## 10. Open questions
+## 10. Decisions taken and what is left
 
-1. **Should a pull source ever block registration?** As built, a `websocket`
-   with a mistyped host returns 201 with `state: connecting` and shows up
-   through the gauge and `last_message_at`. An opt-in
-   `wait_for_first_connect: "3s"` making admission wait for `ready()` would
-   catch the typo at `POST` time, at the cost of a config write that can fail
-   for a purely remote and transient reason.
-2. **Push defaults.** `max_attempts: 0` for `webhook` and `grpc` preserves
-   existing behaviour exactly. A small non-zero default would make a lost
-   listener self-heal for operators who never read the restart docs.
-3. **`rest_poller` has no session, so no policy reaches it.** A poller whose
-   endpoint has been returning 404 for a day reads as `running` and `healthy`,
-   with only `last_message_at` telling the truth. A `max_consecutive_failures`
-   that ends the session would put it under the same budget as everything else.
+**Registration does not block on a pull source's first connect, and will not.**
+A mistyped WebSocket host returns `201` with `state: connecting`, and the first
+failed dial is in `last_error` a second later, so reading the stream back
+answers the question without making a config write depend on a remote host being
+up at that moment. An opt-in `wait_for_first_connect` was considered and
+rejected: it would give `201` two meanings depending on a config field, which is
+the ambiguity this design removed, and it would put remote I/O inside admission.
+Waiting belongs in a client that registers and then polls, not in the contract.
+
+**Push connectors default to five attempts, not zero.** The alternative
+preserved a documented limitation rather than a contract, and the release
+outcome this work serves is operational recovery.
+
+**`rest_poller` reports ready after its first successful poll.** That was the
+narrow, real defect behind the original question — the poller claimed `running`
+before it had reached its endpoint. Ending its session after N consecutive
+failures was the other candidate and was not taken: restarting a ticker does not
+fix a 404, and the next tick would have retried anyway. It stays open as a
+smaller question — whether a poller should ever reach a *terminal* state after
+sustained failure, or whether a stale `last_message_at` is the right signal for
+that. Worth its own issue if the reference deployment gives it an answer.

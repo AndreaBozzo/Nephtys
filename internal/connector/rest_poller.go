@@ -17,6 +17,11 @@ import (
 // A poll that fails is not a session failure: the next tick retries, the same
 // way it always has. The source therefore has no restart of its own to ask for
 // — its session ends only when the stream is stopped.
+//
+// It reports itself ready after the first poll that reaches the endpoint, not
+// on entry. A poller that has never got an answer out of its URL is connecting,
+// not running: claiming otherwise would report a stream as healthy while it has
+// ingested nothing and never could.
 type RESTPollerSource struct {
 	id     string
 	url    string
@@ -83,10 +88,17 @@ func (r *RESTPollerSource) Run(ctx context.Context, publish PublishFunc, ready R
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
-	ready()
+	reported := false
+	reachedEndpoint := func(err error) {
+		if err != nil || reported {
+			return
+		}
+		reported = true
+		ready()
+	}
 
 	// Perform initial fetch immediately
-	r.poll(ctx, publish)
+	reachedEndpoint(r.poll(ctx, publish))
 
 	for {
 		select {
@@ -94,16 +106,19 @@ func (r *RESTPollerSource) Run(ctx context.Context, publish PublishFunc, ready R
 			r.logger.Info("Stopped")
 			return nil
 		case <-ticker.C:
-			r.poll(ctx, publish)
+			reachedEndpoint(r.poll(ctx, publish))
 		}
 	}
 }
 
-func (r *RESTPollerSource) poll(ctx context.Context, publish PublishFunc) {
+// poll performs one request. It returns nil when the endpoint answered, which
+// is what the session's readiness is derived from — including an answer that
+// carried nothing to publish, since an empty 200 still proves the URL is live.
+func (r *RESTPollerSource) poll(ctx context.Context, publish PublishFunc) error {
 	req, err := http.NewRequestWithContext(ctx, r.config.Method, r.url, nil)
 	if err != nil {
 		r.logger.Error("Failed to create request", "error", err)
-		return
+		return fmt.Errorf("build request: %w", err)
 	}
 
 	for k, v := range r.config.Headers {
@@ -116,7 +131,7 @@ func (r *RESTPollerSource) poll(ctx context.Context, publish PublishFunc) {
 		if ctx.Err() == nil {
 			r.logger.Error("Request failed", "error", err)
 		}
-		return
+		return fmt.Errorf("request failed: %w", err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -126,17 +141,17 @@ func (r *RESTPollerSource) poll(ctx context.Context, publish PublishFunc) {
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		r.logger.Error("Unexpected response status", "status", resp.Status)
-		return
+		return fmt.Errorf("unexpected response status %s", resp.Status)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		r.logger.Error("Failed to read response body", "error", err)
-		return
+		return fmt.Errorf("read response body: %w", err)
 	}
 
 	if len(body) == 0 {
-		return
+		return nil
 	}
 
 	// Validate JSON format
@@ -159,4 +174,7 @@ func (r *RESTPollerSource) poll(ctx context.Context, publish PublishFunc) {
 	} else {
 		r.logger.Debug("Event published", "topic", r.topic)
 	}
+	// A publish failure is a pipeline or broker problem, not evidence that the
+	// endpoint is unreachable, so it does not change what the poll proved.
+	return nil
 }

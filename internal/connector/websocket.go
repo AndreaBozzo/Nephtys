@@ -64,7 +64,7 @@ func (w *WebSocketSource) Run(ctx context.Context, publish PublishFunc, ready Re
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		return fmt.Errorf("dial %s: %w", w.url, err)
+		return fmt.Errorf("dial %s: %w", redactURL(w.url), err)
 	}
 
 	// ReadMessage does not observe ctx, so cancellation has to reach it by

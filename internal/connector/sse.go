@@ -87,8 +87,15 @@ func (s *SSESource) Run(ctx context.Context, publish PublishFunc, ready ReadyFun
 	s.logger.Info("Connected")
 	ready()
 
-	if err := s.readLoop(ctx, resp, publish); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("stream ended: %w", err)
+	if err := s.readLoop(ctx, resp, publish); ctx.Err() == nil {
+		// A clean EOF is not a clean outcome here: an event stream that ends on
+		// its own has ended the session, and the supervisor is about to spend
+		// an attempt on it. Returning nil would spend that attempt with nothing
+		// recorded to say why.
+		if err != nil {
+			return fmt.Errorf("stream ended: %w", err)
+		}
+		return fmt.Errorf("stream closed by %s", redactURL(s.url))
 	}
 	return nil
 }

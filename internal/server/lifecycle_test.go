@@ -590,8 +590,13 @@ func TestSupervisor_UptimeEarnsBudgetBack(t *testing.T) {
 	waitForSessions(t, src, 4)
 	waitForStatus(t, m, src.id, domain.StatusRunning)
 
-	if info := infoFor(t, m, src.id); info.RestartCount != 1 {
-		t.Errorf("restart_count = %d, want 1 — the budget is spent and re-earned each time", info.RestartCount)
+	// Three restarts happened, and restart_count says three. It counts the
+	// stream's whole life rather than its position in the current budget —
+	// that position went 1, 0, 1, 0, 1 as each session earned its attempts
+	// back, and a field named restart_count that goes down would be a poor
+	// thing to have promised.
+	if info := infoFor(t, m, src.id); info.RestartCount != 3 {
+		t.Errorf("restart_count = %d, want 3", info.RestartCount)
 	}
 }
 
@@ -633,13 +638,18 @@ func TestSupervisor_CancellationDuringBackoffDoesNotRestart(t *testing.T) {
 	assertStreamStateDeleted(t, src.id)
 }
 
-// TestSupervisor_PushDefaultIsTerminal pins the backward-compatible default.
-// Losing a webhook listener has always been terminal, and this release makes
-// restarts configurable without changing what an existing config does.
-func TestSupervisor_PushDefaultIsTerminal(t *testing.T) {
+// TestSupervisor_PushDefaultIsBoundedThenTerminal pins the push default: a
+// lost listener is retried a few times and then becomes terminal. Before there
+// was a supervisor the first failure was terminal and an operator had to
+// remove and re-register the stream by hand.
+func TestSupervisor_PushDefaultIsBoundedThenTerminal(t *testing.T) {
 	m := testManager(t, nil, frozenClock())
 
-	src := newScriptedSource("push-default", nil, []error{errSessionEnded, errSessionEnded})
+	failures := make([]error, defaultPushAttempts+1)
+	for i := range failures {
+		failures[i] = errSessionEnded
+	}
+	src := newScriptedSource("push-default", nil, failures)
 	cfg := domain.StreamSourceConfig{ID: src.id, Kind: "webhook", Topic: "nephtys.stream.hooks"}
 	t.Cleanup(func() { telemetry.DeleteStreamSeries(src.id) })
 
@@ -648,11 +658,36 @@ func TestSupervisor_PushDefaultIsTerminal(t *testing.T) {
 	}
 	waitForStatus(t, m, src.id, domain.StatusError)
 
-	if info := infoFor(t, m, src.id); info.RestartCount != 0 {
-		t.Errorf("restart_count = %d, want 0 for a push connector with no policy", info.RestartCount)
+	if info := infoFor(t, m, src.id); info.RestartCount != defaultPushAttempts {
+		t.Errorf("restart_count = %d, want %d", info.RestartCount, defaultPushAttempts)
 	}
-	if _, sessions, _ := src.counts(); sessions != 1 {
-		t.Errorf("ran %d sessions, want 1", sessions)
+	opens, sessions, _ := src.counts()
+	if sessions != defaultPushAttempts+1 {
+		t.Errorf("ran %d sessions, want %d", sessions, defaultPushAttempts+1)
+	}
+	if opens != defaultPushAttempts+1 {
+		t.Errorf("acquired %d times, want %d — every restart rebinds the listener", opens, defaultPushAttempts+1)
+	}
+}
+
+// TestSupervisor_PushRecoversFromATransientListenerLoss is the case the
+// non-zero default exists for: the listener comes back on the next attempt and
+// nobody has to touch the stream.
+func TestSupervisor_PushRecoversFromATransientListenerLoss(t *testing.T) {
+	m := testManager(t, nil, frozenClock())
+
+	src := newScriptedSource("push-recovers", nil, []error{errSessionEnded})
+	cfg := domain.StreamSourceConfig{ID: src.id, Kind: "webhook", Topic: "nephtys.stream.hooks"}
+	t.Cleanup(func() { telemetry.DeleteStreamSeries(src.id) })
+
+	if err := m.Register(src, cfg); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	waitForSessions(t, src, 2)
+	waitForStatus(t, m, src.id, domain.StatusRunning)
+
+	if info := infoFor(t, m, src.id); info.Health != "healthy" {
+		t.Errorf("health = %q, want healthy after the listener came back", info.Health)
 	}
 }
 

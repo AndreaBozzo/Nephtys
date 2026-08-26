@@ -17,6 +17,14 @@ const (
 	defaultBackoffFactor  = 2.0
 	defaultResetAfter     = 60 * time.Second
 
+	// defaultPushAttempts bounds recovery for the connectors that bind a local
+	// listener. Before there was a supervisor, losing that listener was
+	// terminal and the stream had to be removed and re-registered by hand; a
+	// small budget rebinds through a transient loss and still reaches the same
+	// errored terminal state — roughly half a minute later — when the port is
+	// genuinely gone.
+	defaultPushAttempts = 5
+
 	// unlimitedAttempts is the max_attempts value meaning "never give up".
 	unlimitedAttempts = -1
 )
@@ -62,9 +70,10 @@ func (p restartPolicy) delay(attempt int) time.Duration {
 }
 
 // pullKinds are the connectors whose sessions end on their own and are expected
-// to be re-run. Push connectors bind a local listener instead, and losing one
-// has always been terminal — so they keep that default and an operator opts in
-// to restarts by writing a policy.
+// to be re-run, indefinitely by default. Push connectors bind a local listener
+// instead: they get a small bounded budget, because a listener that comes back
+// on the second attempt should not need an operator, and one that does not come
+// back should still end up somewhere alertable.
 var pullKinds = map[string]bool{
 	"websocket":   true,
 	"sse":         true,
@@ -75,7 +84,7 @@ var pullKinds = map[string]bool{
 // default, overridden field by field by whatever the config sets.
 func restartPolicyFor(cfg domain.StreamSourceConfig) restartPolicy {
 	policy := restartPolicy{
-		maxAttempts:    0,
+		maxAttempts:    defaultPushAttempts,
 		initialBackoff: defaultInitialBackoff,
 		maxBackoff:     defaultMaxBackoff,
 		factor:         defaultBackoffFactor,
@@ -105,8 +114,8 @@ func restartPolicyFor(cfg domain.StreamSourceConfig) restartPolicy {
 	if d, err := time.ParseDuration(rc.ResetAfter); err == nil && rc.ResetAfter != "" {
 		policy.resetAfter = d
 	}
-	if policy.maxBackoff < policy.initialBackoff {
-		policy.maxBackoff = policy.initialBackoff
-	}
+	// No clamp on maxBackoff below initialBackoff: validateRestart rejects that
+	// combination, including when one side of it is a default, so every config
+	// that reaches here has a ladder that grows.
 	return policy
 }

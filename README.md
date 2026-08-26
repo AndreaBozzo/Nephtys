@@ -346,16 +346,25 @@ The same rules apply to `PUT /v1/streams/{id}/pipeline`, which returns 400 on an
 | `websocket` | Outbound (pull) | Unlimited, 1s → 30s | Standard WebSocket. | `url` |
 | `rest_poller` | Outbound (pull) | N/A (retries on next tick) | Periodically requests JSON from REST APIs at given intervals. | `url`, `interval` |
 | `sse` | Outbound (pull) | Unlimited, 1s → 30s | Standard Server-Sent Events bindings. | `url` |
-| `webhook` | Inbound (push) | None — terminal on failure | Local HTTP server receiving inbound webhooks. | `port`, `path`, `auth_token` |
-| `grpc` | Inbound (push) | None — terminal on failure | gRPC server accepting client-streaming pushes. | `port` |
+| `webhook` | Inbound (push) | 5 attempts, then terminal | Local HTTP server receiving inbound webhooks. | `port`, `path`, `auth_token` |
+| `grpc` | Inbound (push) | 5 attempts, then terminal | gRPC server accepting client-streaming pushes. | `port` |
 
-**Who owns the retry.** A connector runs one session and returns; deciding whether to run it again is the stream manager's job, under the stream's `restart` policy. Pull connectors (`websocket`, `sse`) reconnect on that ladder by default, unlimited, exactly as they did when they retried internally. `rest_poller` has no session to lose — a failed poll is retried on the next tick — so no restart policy applies to it. Push connectors (`webhook`, `grpc`) do not "reconnect": they accept whatever the upstream client sends, so retry-on-failure is the *client's* responsibility, and a lost listener is terminal unless you configure `restart` for them.
+**Who owns the retry.** A connector runs one session and returns; deciding whether to run it again is the stream manager's job, under the stream's `restart` policy. Pull connectors (`websocket`, `sse`) reconnect on that ladder by default, unlimited, exactly as they did when they retried internally. `rest_poller` has no session to lose — a failed poll is retried on the next tick — so no restart policy applies to it. Push connectors (`webhook`, `grpc`) do not "reconnect": they accept whatever the upstream client sends, so retry-on-failure is the *client's* responsibility. What the supervisor can do for them is rebind a listener that was lost — five attempts by default, then terminal.
 
 Full detail — the state machine, the failure contract, and what a `201` guarantees — is in [`docs/LIFECYCLE.md`](docs/LIFECYCLE.md).
 
 ## Stream Lifecycle
 
-A `POST /v1/streams` returns `201 Created` only once the stream's local resources are held: the id is free, the port is bound, the pipeline is built, and the config is durable. It does not wait for an upstream connection, which is remote and may take arbitrarily long — the response body's `state` field says whether the stream is already `running` or still `connecting`.
+A `POST /v1/streams` returns `201 Created` only once the stream's local resources are held: the id is free, the port is bound, the pipeline is built, and the config is durable. It does not wait for an upstream connection, which is remote and may take arbitrarily long — the response body's `state` field reports where the stream had got to as the response was written, usually `connecting`. It is a snapshot, not a promise: read `GET /v1/streams` for the current state.
+
+**Checking a new stream reached its source.** Registration deliberately does not block on a remote host, so a mistyped URL still returns `201`. Read it back instead: within a second or so the first failed attempt is recorded, and `GET /v1/streams` carries it.
+
+```bash
+curl -X POST http://localhost:3002/v1/streams -d @stream.json
+sleep 2 && curl -s http://localhost:3002/v1/streams   # look at status and last_error
+# {"id":"gateway","status":"reconnecting","health":"degraded",
+#  "restart_count":1,"last_error":"dial ws://typo.example.com: no such host", ...}
+```
 
 **Failure contract.**
 
@@ -382,7 +391,7 @@ A `POST /v1/streams` returns `201 Created` only once the stream's local resource
 }
 ```
 
-- `max_attempts` — omit for unlimited, `0` to never restart. Negative is rejected.
+- `max_attempts` — omit to take the default for the stream's kind (unlimited for `websocket`/`sse`, 5 for `webhook`/`grpc`), or `0` to never restart. Negative is rejected. Omitting it is *not* the same as asking for unlimited: a webhook with a `restart` block that sets only backoff fields still stops after five attempts.
 - `reset_after` — how long a session must stay up before the attempt budget is earned back. It is deliberately uptime-based and not connect-based: a source that accepts and drops immediately would otherwise restart forever without ever reaching a state you can alert on.
 
 Every field is optional and defaults to the policy for the stream's kind, so an existing configuration behaves exactly as it did before restart policies existed. Runnable example: [`docs/examples/sensor_websocket_restart.json`](docs/examples/sensor_websocket_restart.json).

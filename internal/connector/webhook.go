@@ -35,7 +35,24 @@ type WebhookSource struct {
 
 	listener net.Listener
 	server   *http.Server
+
+	// shutdownGrace is how long a stopping session waits for in-flight
+	// handlers before forcing connections closed. A field rather than a
+	// constant so a test can reach the escalation path without a 15s wait.
+	shutdownGrace time.Duration
 }
+
+const (
+	// requestTimeout bounds a single inbound request.
+	requestTimeout = 10 * time.Second
+
+	// shutdownGrace is how long a stopping session waits for in-flight
+	// handlers. It is longer than requestTimeout on purpose: a handler that
+	// started just before the stop still gets its full budget, so reaching the
+	// grace period means a handler is stuck rather than merely slow, and the
+	// connections are then closed rather than left to outlive the session.
+	shutdownGrace = requestTimeout + 5*time.Second
+)
 
 // NewWebhookSource creates a new Webhook receiver connector.
 func NewWebhookSource(id, topic string, config *domain.WebhookConfig) *WebhookSource {
@@ -56,10 +73,11 @@ func NewWebhookSource(id, topic string, config *domain.WebhookConfig) *WebhookSo
 	}
 
 	return &WebhookSource{
-		id:     id,
-		topic:  topic,
-		config: config,
-		logger: slog.With("connector", id, "kind", "webhook"),
+		id:            id,
+		topic:         topic,
+		config:        config,
+		logger:        slog.With("connector", id, "kind", "webhook"),
+		shutdownGrace: shutdownGrace,
 	}
 }
 
@@ -101,8 +119,8 @@ func (w *WebhookSource) Run(ctx context.Context, publish PublishFunc, ready Read
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		ReadTimeout:       requestTimeout,
+		WriteTimeout:      requestTimeout,
 		IdleTimeout:       60 * time.Second,
 	}
 	w.server = srv
@@ -130,7 +148,9 @@ func (w *WebhookSource) Run(ctx context.Context, publish PublishFunc, ready Read
 	case <-ctx.Done():
 		w.logger.Info("Stopping Webhook server")
 		w.shutdown(srv)
-		// Wait for Serve to return, so no goroutine of this session survives it.
+		// Wait for Serve to return, so the accept loop of this session does not
+		// survive it. See shutdown for what happens to a handler that is still
+		// running when the grace period ends.
 		<-errChan
 		return nil
 	}
@@ -152,10 +172,23 @@ func (w *WebhookSource) shutdown(srv *http.Server) {
 	if srv == nil {
 		return
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), w.shutdownGrace)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		w.logger.Warn("Failed to gracefully shutdown webhook server", "error", err)
+		// Shutdown gave up waiting. Close forces the open connections shut, so
+		// no client is left holding one against a session that has ended and a
+		// port a restart may need to rebind.
+		//
+		// What it cannot do is stop a handler goroutine already inside publish:
+		// nothing in Go can. That handler runs to completion, and if the
+		// stream's pipeline generation has been retired by then its event is
+		// dropped by the retired generation rather than published. Reaching
+		// this path at all means a handler outlived requestTimeout by the
+		// grace period, which is a wedged publish rather than a slow client.
+		w.logger.Warn("Webhook shutdown timed out; closing connections", "error", err)
+		if closeErr := srv.Close(); closeErr != nil {
+			w.logger.Warn("Failed to close webhook server", "error", closeErr)
+		}
 	}
 }
 
