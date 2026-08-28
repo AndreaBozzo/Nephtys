@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"nephtys/internal/domain"
@@ -28,6 +29,24 @@ func (s *Server) handleListStreams(w http.ResponseWriter, r *http.Request) {
 		"streams": streams,
 		"count":   len(streams),
 	})
+}
+
+// handleGetStream returns one stream's status and the configuration it is
+// actually running, including the pipeline currently installed on it.
+func (s *Server) handleGetStream(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "stream id is required")
+		return
+	}
+
+	detail, ok := s.manager.Describe(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("source %q: %s", id, ErrStreamNotFound))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // handleCreateStream registers and starts a new stream source.

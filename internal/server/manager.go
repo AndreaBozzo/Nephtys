@@ -5,11 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -163,35 +160,6 @@ func (r *streamRuntime) recordFailure(err error, at time.Time) {
 		err = errSessionClosed
 	}
 	r.lastError.Store(&streamFailure{message: redactForAPI(err.Error()), at: at})
-}
-
-// urlInMessage matches a URL embedded in an error string. Connector errors
-// quote the configured endpoint, and net/http quotes it for us in url.Error.
-var urlInMessage = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s"']+`)
-
-// redactForAPI strips credentials from any URL inside an error message.
-//
-// last_error is served by GET /v1/streams, whose auth is optional, so it is a
-// path from connector errors to whoever can reach the API. Endpoint URLs
-// routinely carry tokens in a query string or in userinfo, and neither is
-// needed to tell an operator which endpoint failed. The unredacted error still
-// goes to the log, which is not served over HTTP.
-func redactForAPI(message string) string {
-	return urlInMessage.ReplaceAllStringFunc(message, func(raw string) string {
-		// Error text tends to end a URL with punctuation. Keep it out of the
-		// parse and put it back afterwards.
-		trimmed := strings.TrimRight(raw, `.,;:!?)]}`)
-		suffix := raw[len(trimmed):]
-
-		parsed, err := url.Parse(trimmed)
-		if err != nil || parsed.Host == "" {
-			return raw
-		}
-		parsed.User = nil
-		parsed.RawQuery = ""
-		parsed.Fragment = ""
-		return parsed.String() + suffix
-	})
 }
 
 // Errors the manager returns for conditions the REST layer maps to a specific
@@ -674,6 +642,43 @@ func (m *StreamManager) List() []StreamInfo {
 		infos = append(infos, streamInfo(id, runtime))
 	}
 	return infos
+}
+
+// StreamDetail is StreamInfo plus the configuration the stream is actually
+// running: the one it was registered with, amended by every accepted pipeline
+// update. Until this existed the effective pipeline lived only inside a
+// closure, so a hot-swap could be requested but never confirmed from outside
+// the process.
+//
+// Config is redacted — see redactConfig. It describes a running stream; it is
+// not a document that can be POSTed back.
+type StreamDetail struct {
+	StreamInfo
+	Config domain.StreamSourceConfig `json:"config"`
+}
+
+// Describe returns one stream's info together with its effective, redacted
+// config. The second return reports whether the stream is registered, which
+// includes streams registered in a terminal failed state — those are exactly
+// the ones an operator most needs to read the config of.
+func (m *StreamManager) Describe(id string) (StreamDetail, bool) {
+	m.mu.RLock()
+	runtime, ok := m.runtimes[id]
+	cfg := m.configs[id]
+	m.mu.RUnlock()
+
+	if !ok {
+		return StreamDetail{}, false
+	}
+
+	// Both halves are read outside the lock. streamInfo reads atomics, and the
+	// sub-configs cfg points at are never mutated in place — UpdatePipeline
+	// installs a whole new PipelineConfig rather than editing the old one — so
+	// what redactConfig walks cannot change underneath it.
+	return StreamDetail{
+		StreamInfo: streamInfo(id, runtime),
+		Config:     redactConfig(cfg),
+	}, true
 }
 
 // StatusOf reports a stream's current lifecycle status.
