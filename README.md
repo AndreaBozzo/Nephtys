@@ -314,12 +314,25 @@ diagnostic, and the values an operator supplied are withheld as `[REDACTED]`.
 | `webhook.auth_token` | `[REDACTED]` when set, absent when not |
 | `sse.headers`, `rest_poller.headers` | every header name, no header value |
 | `websocket.on_connect_send` | one `[REDACTED]` per frame, in order |
-| `url` | userinfo and fragment dropped, query keys kept, query values withheld |
+| `url` | scheme, host and port kept; userinfo and fragment dropped; each path segment withheld, keeping how many there are; query keys kept and their values withheld; a valueless query parameter withheld whole |
 | everything else | intact — `kind`, `topic`, ports, paths, intervals, `metadata`, `restart`, and the whole `pipeline` |
 
-Header values go whether or not the header looks like a credential, because the
-header carrying a token is named `Authorization` by convention only — a rule
-keyed on the name is defeated by choosing another one. Full-fidelity readback of
+The line is drawn by syntax. Where a separator tells a label apart from a value
+the label stays: a header keeps its name, a query parameter keeps its key. Where
+nothing separates them, the whole thing goes — which is why a URL path segment
+is withheld even though most of them are ordinary routes. `/v2/stream/recentchange`
+and `/services/T000/B000/xoxb-secret` are the same shape, and a token in the path
+is how a whole class of webhook and feed endpoints authenticates. Keeping the
+host is what stops this being a blanket redaction: you can still see which
+service a stream talks to and which parameters it sends.
+
+For the same reason header values go whether or not the header looks like a
+credential — the header carrying a token is named `Authorization` by convention
+only, and a rule keyed on the name is defeated by choosing another one.
+
+`metadata` and the `pipeline` block are served intact because nothing presents
+them as a credential: nothing reads `metadata` at all, and `enrich` tags are
+already broadcast on every event Nephtys publishes. Full-fidelity readback of
 non-secret values is what secret references ([#29](https://github.com/AndreaBozzo/Nephtys/issues/29)) exist to make possible.
 
 Like every other management route, it is behind `NEPHTYS_ADMIN_TOKEN` and

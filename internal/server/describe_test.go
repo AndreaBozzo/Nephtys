@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +52,7 @@ func secretConfig(id string) domain.StreamSourceConfig {
 		ID:       id,
 		Kind:     "websocket",
 		Topic:    "nephtys.stream.test",
-		URL:      "wss://operator:hunter2@gateway.example.com/ws?apikey=s3cret&channel=sensors",
+		URL:      "wss://operator:hunter2@gateway.example.com/feed/p4thtoken?apikey=s3cret&channel=sensors&b4reflag",
 		Metadata: map[string]string{"site": "turin"},
 		Websocket: &domain.WebsocketConfig{
 			OnConnectSend: domain.StringList{
@@ -168,7 +169,7 @@ func TestHandleGetStream_ResponseCarriesNoSecret(t *testing.T) {
 	s.handleGetStream(rec, req)
 
 	body := rec.Body.String()
-	for _, secret := range []string{"s3cret", "hunter2", "operator:"} {
+	for _, secret := range []string{"s3cret", "hunter2", "operator:", "p4thtoken", "b4reflag"} {
 		if strings.Contains(body, secret) {
 			t.Errorf("response body leaks %q:\n%s", secret, body)
 		}
@@ -264,6 +265,66 @@ func TestGetStreamRouteRequiresAuth(t *testing.T) {
 	}
 }
 
+// Describe reads the config under RLock and redacts it after releasing, which
+// is only sound because no sub-config is ever mutated in place — UpdatePipeline
+// installs a whole new PipelineConfig rather than editing the old one. That is
+// an invariant of the rest of the package, not something Describe enforces, so
+// it is worth a test that would fail if the invariant were broken. Under -race
+// a concurrent in-place edit is a reported data race rather than a flake.
+func TestDescribe_IsSafeAgainstConcurrentPipelineUpdates(t *testing.T) {
+	manager := NewStreamManager(nil, newRecordingStore())
+	defer manager.StopAll()
+
+	cfg := secretConfig("racing")
+	if err := manager.Register(newMockSource(cfg.ID), cfg); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	const rounds = 50
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			next := &domain.PipelineConfig{
+				Enrich: &domain.EnrichConfig{Tags: map[string]string{"generation": strconv.Itoa(i)}},
+			}
+			if err := manager.UpdatePipeline(cfg.ID, next); err != nil {
+				t.Errorf("update pipeline %d: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			detail, ok := manager.Describe(cfg.ID)
+			if !ok {
+				t.Error("Describe reported the stream absent")
+				return
+			}
+			// Serialising is what the handler does with the value Describe
+			// returns, and it is what makes this exercise the invariant:
+			// encoding walks every sub-config pointer, so an in-place edit
+			// racing this read is a read and a write of the same struct.
+			if _, err := json.Marshal(detail); err != nil {
+				t.Errorf("marshal detail: %v", err)
+				return
+			}
+			// Whichever generation is read, it has to be a whole one: the
+			// connector fields must never come back half-swapped.
+			if detail.Config.Kind != cfg.Kind || detail.Config.Topic != cfg.Topic {
+				t.Errorf("Describe saw a torn config: %+v", detail.Config)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
 func TestRedactURL(t *testing.T) {
 	tests := []struct {
 		name string
@@ -271,20 +332,46 @@ func TestRedactURL(t *testing.T) {
 		want string
 	}{
 		{"empty stays empty", "", ""},
-		{"plain url untouched", "wss://stream.example.com/ws", "wss://stream.example.com/ws"},
-		{"userinfo dropped", "wss://user:pass@stream.example.com/ws", "wss://stream.example.com/ws"},
+		{"host kept, path withheld", "wss://stream.example.com/ws", "wss://stream.example.com/[REDACTED]"},
+		{"hostless url untouched", "wss://stream.example.com", "wss://stream.example.com"},
+		{"root path is structure", "https://api.example.com/", "https://api.example.com/"},
+		{"port kept", "wss://gateway.example.com:8443/ws", "wss://gateway.example.com:8443/[REDACTED]"},
+		{"userinfo dropped", "wss://user:pass@stream.example.com/ws", "wss://stream.example.com/[REDACTED]"},
+		{
+			// A token in the path is how a whole class of webhook endpoints
+			// authenticates, and nothing in the syntax marks it as one.
+			"credential in a path segment withheld",
+			"https://hooks.example.com/services/T000/B000/xoxb-s3cret",
+			"https://hooks.example.com/[REDACTED]/[REDACTED]/[REDACTED]/[REDACTED]",
+		},
+		{
+			"segment count and trailing slash kept",
+			"https://api.example.com/v1/forecast/",
+			"https://api.example.com/[REDACTED]/[REDACTED]/",
+		},
 		{
 			"query keys kept, values withheld",
 			"https://api.example.com/v1/forecast?latitude=44.49&longitude=11.34",
-			"https://api.example.com/v1/forecast?latitude=[REDACTED]&longitude=[REDACTED]",
+			"https://api.example.com/[REDACTED]/[REDACTED]?latitude=[REDACTED]&longitude=[REDACTED]",
 		},
 		{
 			"query order preserved",
 			"https://api.example.com/p?z=1&a=2&m=3",
-			"https://api.example.com/p?z=[REDACTED]&a=[REDACTED]&m=[REDACTED]",
+			"https://api.example.com/[REDACTED]?z=[REDACTED]&a=[REDACTED]&m=[REDACTED]",
 		},
-		{"valueless flag kept", "https://api.example.com/p?verbose", "https://api.example.com/p?verbose"},
-		{"fragment dropped", "https://api.example.com/p#part", "https://api.example.com/p"},
+		{
+			// No "=" means nothing marks this as a label, so it may be a bare
+			// token rather than a flag like ?verbose.
+			"valueless parameter withheld whole",
+			"https://api.example.com/p?s3cret-token",
+			"https://api.example.com/[REDACTED]?[REDACTED]",
+		},
+		{
+			"mixed valued and valueless parameters",
+			"https://api.example.com/p?lat=1&verbose",
+			"https://api.example.com/[REDACTED]?lat=[REDACTED]&[REDACTED]",
+		},
+		{"fragment dropped", "https://api.example.com/p#part", "https://api.example.com/[REDACTED]"},
 		{"unparseable url withheld whole", "https://example.com/%zz", "[REDACTED]"},
 	}
 
@@ -294,6 +381,21 @@ func TestRedactURL(t *testing.T) {
 				t.Errorf("redactURL(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+// The markers must survive URL assembly readably. url.URL.String() escapes a
+// path it is left to encode itself, which turns every marker into
+// %5BREDACTED%5D — still redacted, and unreadable in the field an operator is
+// reading to identify an endpoint.
+func TestRedactURL_MarkersAreNotPercentEscaped(t *testing.T) {
+	got := redactURL("https://api.example.com/v1/forecast")
+
+	if strings.Contains(got, "%5B") || strings.Contains(got, "%5D") {
+		t.Errorf("redactURL escaped its markers: %q", got)
+	}
+	if !strings.Contains(got, redactedValue) {
+		t.Errorf("redactURL(%q) = %q, want it to contain %q", "https://api.example.com/v1/forecast", got, redactedValue)
 	}
 }
 

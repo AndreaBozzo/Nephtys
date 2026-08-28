@@ -18,28 +18,32 @@ import (
 // that is set and withheld from one that was never configured.
 const redactedValue = "[REDACTED]"
 
-// redactConfig returns cfg with every operator-supplied value withheld, keeping
-// the structure that names it.
+// redactConfig returns cfg with every value that could be a credential
+// withheld, keeping the structure that names it.
 //
 // GET /v1/streams/{id} is the first endpoint to serve a stream's configuration
 // back, so it is the first that could be used to read a credential that was
-// only ever written. The rule it applies is structural rather than a list of
-// field names: the shape of a config is the diagnostic an operator came for,
-// and the values they supplied are not ours to hand back. A header keeps its
-// name and loses its value, a URL keeps its query keys and loses theirs, and a
-// connect frame is withheld whole.
+// only ever written. What it withholds is what a stream presents to something
+// else in order to be let in: an auth token, a header value, a connect frame,
+// and the parts of a URL that carry either. What it keeps is structure — kind,
+// topic, ports, the path this process serves, intervals, the restart block —
+// and values that are never presented as credentials by any code path:
+// metadata, which nothing reads at all, and the pipeline, whose enrich tags are
+// already broadcast on every event Nephtys publishes. Serving those back
+// exposes nothing that was not already out.
+//
+// Where the two overlap, syntax decides. A separator that tells a label from a
+// value lets the label through: a header keeps its name, a query parameter
+// keeps its key. Where nothing separates them the whole thing goes, which is
+// why a URL path segment is withheld even though most of them are routes —
+// /v2/stream/recentchange and /services/T00/B00/xoxb-secret are the same shape.
 //
 // A name-based denylist was the obvious alternative and is unenforceable: the
 // header carrying a token is called Authorization by convention only, and
-// nothing stops an operator from calling it X-Thing. The cost of the structural
-// rule is that Accept: application/json is withheld too, which is a small price
-// for a rule that cannot be defeated by naming something differently.
-//
-// What is left intact is what cannot carry a credential by construction:
-// kind, topic, ports, paths, intervals, the restart block, and the whole
-// pipeline — which is what the endpoint mainly exists to report. Metadata is
-// left intact too: it is a label map with no other purpose, and withholding it
-// would leave the field with no use at all.
+// nothing stops an operator from calling it X-Thing. The cost of deciding by
+// syntax instead is that Accept: application/json is withheld too, which is a
+// small price for a rule that cannot be defeated by naming something
+// differently.
 //
 // The result is a description of a running stream, not a document that can be
 // POSTed back.
@@ -110,18 +114,32 @@ func redactFrames(frames domain.StringList) domain.StringList {
 	return redacted
 }
 
-// redactURL withholds a URL's credentials and its query values while keeping
-// enough to identify the endpoint.
+// redactURL withholds the parts of a URL that could be a credential while
+// keeping the part that names the endpoint.
 //
-// Userinfo goes entirely: a user:password@ pair has no diagnostic value at all.
-// Query keys stay and their values go, because a query string is both where an
-// API key is most often parked and where a poller's actual semantics live —
-// reporting https://api.example.com/v1/forecast for a stream polling three
-// named parameters would name an endpoint nobody is polling.
+// The line is drawn by syntax, exactly as it is for headers: where a separator
+// tells a label apart from a value, the label stays; where nothing does, the
+// whole thing goes.
 //
-// This is deliberately not redactForAPI, which drops query strings whole.
-// That one edits free-form error text, where a partially rewritten URL cannot
-// be reassembled reliably; this one edits a structured field.
+//	scheme://host:port  kept — structural, and names the service being talked to
+//	userinfo            dropped — a user:password@ pair has no diagnostic value
+//	path                each segment withheld, count and shape kept
+//	query "k=v"         key kept, value withheld
+//	query bare flag     withheld whole — no "=", so it may be a value
+//	fragment            dropped
+//
+// Path segments go because nothing separates a route from a token inside one:
+// /v2/stream/recentchange and /services/T00/B00/xoxb-secret are the same shape,
+// and a URL-embedded token is how a whole class of webhook and feed endpoints
+// authenticates. Keeping the host is what stops this from being a blanket
+// redaction — an operator can still see which service a stream talks to, and
+// which query parameters it sends.
+//
+// This is deliberately not redactForAPI, which drops query strings whole and
+// leaves paths alone. That one edits free-form error text, where a partially
+// rewritten URL cannot be reassembled reliably; this one edits a structured
+// field, and is the only one of the two whose output an operator reads as a
+// description of a configuration.
 func redactURL(raw string) string {
 	if raw == "" {
 		return raw
@@ -135,9 +153,34 @@ func redactURL(raw string) string {
 	}
 
 	parsed.User = nil
+	// Path and RawPath are set to the same string so String() emits it
+	// verbatim: left to escape Path on its own it would render every marker as
+	// %5BREDACTED%5D, which is correct and unreadable.
+	redactedPath := redactPathSegments(parsed.Path)
+	parsed.Path = redactedPath
+	parsed.RawPath = redactedPath
 	parsed.RawQuery = redactQueryValues(parsed.RawQuery)
 	parsed.Fragment = ""
 	return parsed.String()
+}
+
+// redactPathSegments withholds each segment of a path, keeping how many there
+// are and any trailing slash. Two segments instead of five is a difference an
+// operator can act on; which two they are is not something we can serve.
+func redactPathSegments(path string) string {
+	if path == "" || path == "/" {
+		return path
+	}
+
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		// Splitting a rooted path yields an empty leading element, and a
+		// trailing slash yields an empty final one. Both are structure.
+		if segment != "" {
+			segments[i] = redactedValue
+		}
+	}
+	return strings.Join(segments, "/")
 }
 
 // redactQueryValues rewrites a raw query string, keeping each key and the order
@@ -153,7 +196,12 @@ func redactQueryValues(rawQuery string) string {
 	for i, param := range params {
 		key, _, hasValue := strings.Cut(param, "=")
 		if !hasValue {
-			// A valueless flag has nothing to withhold.
+			// No "=" means nothing marks this as a label, so it may be a bare
+			// token rather than a flag. Withhold it whole; "there is one
+			// valueless parameter here" is all that can be said safely.
+			if param != "" {
+				params[i] = redactedValue
+			}
 			continue
 		}
 		params[i] = key + "=" + redactedValue

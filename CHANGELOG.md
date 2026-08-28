@@ -20,10 +20,14 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
   | `webhook.auth_token` | `[REDACTED]` when set, absent when not |
   | `sse.headers`, `rest_poller.headers` | every header name, no header value |
   | `websocket.on_connect_send` | one `[REDACTED]` per frame, in order |
-  | `url` | userinfo and fragment dropped, query keys kept, query values withheld |
+  | `url` | scheme, host and port kept; userinfo and fragment dropped; each path segment withheld, keeping how many there are; query keys kept and their values withheld; a valueless query parameter withheld whole |
   | everything else | intact — `kind`, `topic`, ports, paths, intervals, `metadata`, `restart`, and the whole `pipeline` |
 
-  Header values go whether or not the header looks like a credential. A denylist of names was the obvious alternative and is unenforceable: the header carrying a token is called `Authorization` by convention only, and nothing stops an operator from naming it `X-Thing`. The cost is that `Accept: application/json` is withheld too, which buys a rule that cannot be defeated by naming something differently. Query *keys* are kept rather than dropped with their values, because a query string is where a poller's semantics live as often as a key is — reporting `https://api.example.com/v1/forecast` for a stream polling three named parameters would name an endpoint nobody is polling.
+  The line is drawn by syntax: where a separator tells a label apart from a value the label stays, and where nothing separates them the whole thing goes. So a header keeps its name and a query parameter keeps its key, while a URL path segment and a valueless query parameter are withheld whole — `/v2/stream/recentchange` and `/services/T000/B000/xoxb-secret` are the same shape, and a token in the path is how a whole class of webhook and feed endpoints authenticates. Keeping the scheme, host and port is what stops this being a blanket redaction: an operator can still see which service a stream talks to and which parameters it sends.
+
+  A denylist of field names was the obvious alternative and is unenforceable: the header carrying a token is called `Authorization` by convention only, and nothing stops an operator from naming it `X-Thing`. Deciding by syntax costs the readback of `Accept: application/json`, which buys a rule that cannot be defeated by naming something differently.
+
+  `metadata` and the `pipeline` block are served intact because no code path presents them as a credential — nothing reads `metadata` at all, and `enrich` tags are already broadcast on every published event.
 
   This is a floor, not the finished mechanism: secret references (#29) are what make full-fidelity readback of non-secret values possible. `GET /v1/streams` is unchanged, and the new route is behind `NEPHTYS_ADMIN_TOKEN` like every other management route.
 - Per-stream restart policy and a supervisor to run it. A stream may now carry an optional `restart` block — `max_attempts`, `initial_backoff`, `max_backoff`, `factor`, `reset_after` — validated by `--config-check` like every other part of the config. (#15)
