@@ -308,6 +308,8 @@ A stream that spends its budget goes to `failed` and stays registered: config
 persisted, port claim held, listed by `GET /v1/streams` as `status: error` /
 `health: errored`, gauge on `errored`, with `restart_count`, `last_error` and
 `last_error_at` to say why.
+`GET /v1/streams/{id}` reads its configuration back, redacted, which is how an
+operator sees what the failed stream was configured to do.
 
 `restart_count` is cumulative over the stream's whole life, so it only grows —
 it is not the stream's position in its current budget, which resets each time a

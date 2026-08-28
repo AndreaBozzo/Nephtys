@@ -9,6 +9,23 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ## [Unreleased]
 
 ### Added
+- `GET /v1/streams/{id}`, returning a stream's `StreamInfo` fields plus the configuration it is actually running — the one it was registered with, amended by every accepted `PUT /v1/streams/{id}/pipeline`. (#43)
+
+  Until now nothing could read a stream's config back. The effective pipeline was the sharper gap: a hot swap installs a new generation behind an `atomic.Pointer`, so after #28 made the update durable the applied pipeline still existed only as a closure — it could be requested, and not confirmed. Streams in a terminal `error` state are included, since those are the ones whose config an operator most needs to read.
+
+  **The response is redacted, and is not a document that can be POSTed back.** The endpoint is the first that can be used to read a credential that was only ever written, so it withholds by structure rather than by field name: the shape of a config is the diagnostic, and the values an operator supplied are replaced with `[REDACTED]`.
+
+  | Field | What you get |
+  | --- | --- |
+  | `webhook.auth_token` | `[REDACTED]` when set, absent when not |
+  | `sse.headers`, `rest_poller.headers` | every header name, no header value |
+  | `websocket.on_connect_send` | one `[REDACTED]` per frame, in order |
+  | `url` | userinfo and fragment dropped, query keys kept, query values withheld |
+  | everything else | intact — `kind`, `topic`, ports, paths, intervals, `metadata`, `restart`, and the whole `pipeline` |
+
+  Header values go whether or not the header looks like a credential. A denylist of names was the obvious alternative and is unenforceable: the header carrying a token is called `Authorization` by convention only, and nothing stops an operator from naming it `X-Thing`. The cost is that `Accept: application/json` is withheld too, which buys a rule that cannot be defeated by naming something differently. Query *keys* are kept rather than dropped with their values, because a query string is where a poller's semantics live as often as a key is — reporting `https://api.example.com/v1/forecast` for a stream polling three named parameters would name an endpoint nobody is polling.
+
+  This is a floor, not the finished mechanism: secret references (#29) are what make full-fidelity readback of non-secret values possible. `GET /v1/streams` is unchanged, and the new route is behind `NEPHTYS_ADMIN_TOKEN` like every other management route.
 - Per-stream restart policy and a supervisor to run it. A stream may now carry an optional `restart` block — `max_attempts`, `initial_backoff`, `max_backoff`, `factor`, `reset_after` — validated by `--config-check` like every other part of the config. (#15)
 
   The supervisor is the only retry loop in the process. Connectors used to own their own: `websocket` and `sse` retried forever on a hardcoded 1s→30s ladder, `rest_poller` retried on the next tick, and the push connectors did not retry at all. A restart policy bolted onto that would have reached only the push connectors, because `Start` on a pull connector never returned except on cancellation — the three that actually retried would have kept an unconfigurable policy of their own. So `StreamSource` now runs one session and returns, and the ladder and the attempt budget live in the manager.

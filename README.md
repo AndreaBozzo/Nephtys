@@ -239,7 +239,17 @@ curl \
   http://localhost:3002/v1/streams
 ```
 
-### 4. Remove a stream
+### 4. Inspect one stream
+
+```bash
+curl   -H "Authorization: Bearer $NEPHTYS_ADMIN_TOKEN"   http://localhost:3002/v1/streams/binance_btc
+```
+
+Returns the same fields `GET /v1/streams` gives for that stream, plus the
+configuration it is running — including the pipeline currently installed on it,
+which after a `PUT .../pipeline` is not the one it was registered with.
+
+### 5. Remove a stream
 
 ```bash
 # Gracefully stops the worker and removes the persisted configuration
@@ -268,6 +278,7 @@ When a connector emits raw binary data, Nephtys publishes it directly to NATS in
 |--------|------|-------------|
 | `GET` | `/health` | Health check (Verifies internal NATS connectivity) |
 | `GET` | `/v1/streams` | List registered streams with status, health, last-message time, restart count, and last error |
+| `GET` | `/v1/streams/{id}` | One stream, plus the configuration it is actually running — see [Reading a stream back](#reading-a-stream-back) |
 | `POST` | `/v1/streams` | Register, save, and start a new stream. Answers only once the stream's resources are held — see [Stream Lifecycle](#stream-lifecycle) |
 | `DELETE` | `/v1/streams/{id}` | Halt stream ingest and remove it from configuration |
 | `PUT` | `/v1/streams/{id}/pipeline` | Update a running stream pipeline, durably |
@@ -284,6 +295,35 @@ Control the global behavior of the instance via environment variables.
 | `NEPHTYS_LOG_LEVEL` | `info` | Operational logging verbosity (`debug`, `info`, `warn`, `error`) |
 
 Each `GET /v1/streams` item includes `status`, derived `health` (`healthy`, `degraded`, or `errored`), and `last_message_at` once the source has emitted an event. Prometheus exposes the same connector state as the one-hot `nephtys_stream_state{stream_id,state}` gauge.
+
+### Reading a stream back
+
+`GET /v1/streams/{id}` reports a stream's *effective* configuration: the one it
+was registered with, amended by every accepted `PUT /v1/streams/{id}/pipeline`.
+It is the same config that gets persisted and restarted, so it answers "what is
+this stream actually running" rather than "what was it created with". Streams in
+a terminal `error` state are included — those are the ones whose config an
+operator most needs to read.
+
+**The response is redacted, and is not a document you can POST back.** The rule
+is structural rather than a list of field names: the shape of a config is the
+diagnostic, and the values an operator supplied are withheld as `[REDACTED]`.
+
+| Field | What you get |
+|-------|--------------|
+| `webhook.auth_token` | `[REDACTED]` when set, absent when not |
+| `sse.headers`, `rest_poller.headers` | every header name, no header value |
+| `websocket.on_connect_send` | one `[REDACTED]` per frame, in order |
+| `url` | userinfo and fragment dropped, query keys kept, query values withheld |
+| everything else | intact — `kind`, `topic`, ports, paths, intervals, `metadata`, `restart`, and the whole `pipeline` |
+
+Header values go whether or not the header looks like a credential, because the
+header carrying a token is named `Authorization` by convention only — a rule
+keyed on the name is defeated by choosing another one. Full-fidelity readback of
+non-secret values is what secret references ([#29](https://github.com/AndreaBozzo/Nephtys/issues/29)) exist to make possible.
+
+Like every other management route, it is behind `NEPHTYS_ADMIN_TOKEN` and
+returns `404` for an unknown id.
 
 ### Metrics and the operations dashboard
 
@@ -434,6 +474,7 @@ The same handshake runs on shutdown and on stream removal, so a buffered batch i
 - If the config store rejects the write, the swap does not happen. The stream keeps running its previous pipeline and the endpoint answers `503 Service Unavailable` — the request was valid and the stream exists, so retrying is the right response. See [Persistence](#persistence) for what a `503` does and does not promise about the store itself.
 - The update replaces the `pipeline` block only. `kind`, `url`, `topic` and the connector block are carried over from the registered config untouched.
 - There is no ephemeral mode. A pipeline that should not outlive the process does not currently have a way to say so; if you need one, open an issue rather than relying on the update being forgotten.
+- Read the applied pipeline back with `GET /v1/streams/{id}`, which reports the effective config rather than the registered one. The pipeline block comes back intact — redaction touches connector credentials, not middleware settings.
 
 ## Persistence
 

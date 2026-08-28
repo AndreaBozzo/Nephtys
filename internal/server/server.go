@@ -64,6 +64,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/streams", s.handleListStreams)
+	mux.HandleFunc("GET /v1/streams/{id}", s.handleGetStream)
 	mux.HandleFunc("POST /v1/streams", s.handleCreateStream)
 	mux.HandleFunc("DELETE /v1/streams/{id}", s.handleDeleteStream)
 	mux.HandleFunc("PUT /v1/streams/{id}/pipeline", s.handleUpdatePipeline)
