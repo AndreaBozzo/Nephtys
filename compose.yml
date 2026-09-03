@@ -38,6 +38,22 @@ services:
     depends_on:
       nats:
         condition: service_healthy
+    # /readyz, not /livez: for a compose dependency the useful question is
+    # "can this instance accept streams yet", and Docker restarts an unhealthy
+    # container, which is the wrong response to a broker outage — /readyz
+    # recovers on its own once NATS is back.
+    # The runtime image is distroless — no shell, no wget — so the healthcheck
+    # calls the binary's own probe, which asks /readyz over localhost.
+    # /readyz rather than /livez: for a compose dependency the useful question
+    # is "can this instance accept streams yet". Note that Docker restarts a
+    # container it calls unhealthy, which is the wrong response to a broker
+    # outage; keep restart-on-unhealthy off and let /readyz recover by itself.
+    healthcheck:
+      test: ["CMD", "/nephtys", "--ready-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   prometheus:
     image: prom/prometheus:latest

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,9 +66,11 @@ func run() error {
 	var (
 		showVersion bool
 		configCheck string
+		readyCheck  bool
 	)
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit.")
 	flag.StringVar(&configCheck, "config-check", "", "Validate a stream config JSON file (or '-' for stdin) and exit. Exit code 0 = valid, 1 = invalid.")
+	flag.BoolVar(&readyCheck, "ready-check", false, "Probe this instance's own /readyz over localhost and exit. Exit code 0 = ready, 1 = not ready. For container healthchecks.")
 	flag.Parse()
 
 	if showVersion {
@@ -79,8 +82,21 @@ func run() error {
 		return runConfigCheck(configCheck)
 	}
 
+	if readyCheck {
+		return runReadyCheck(config.Load().Port)
+	}
+
 	return runService()
 }
+
+const (
+	// readyCheckTimeout bounds --ready-check. A probe that hangs is a probe that
+	// makes an orchestrator wait for its own timeout instead.
+	readyCheckTimeout = 3 * time.Second
+
+	// maxProbeBodyBytes caps how much of the probe response is echoed.
+	maxProbeBodyBytes = 4 << 10
+)
 
 // runConfigCheck reads a stream config from path (or stdin if path == "-")
 // and validates it against the same rules used by POST /v1/streams.
@@ -112,6 +128,36 @@ func runConfigCheck(path string) error {
 	}
 
 	fmt.Printf("OK: %s (kind=%s, topic=%s)\n", cfg.ID, cfg.Kind, cfg.Topic)
+	return nil
+}
+
+// runReadyCheck asks the instance running in this container whether it is
+// ready, and exits non-zero if it is not. It exists because the runtime image
+// is distroless: there is no curl, no wget and no shell, so a Docker or
+// Kubernetes healthcheck has only this binary to call.
+//
+// It talks to 127.0.0.1 on the configured port and carries no credentials,
+// which is why /readyz has to stay outside admin auth.
+func runReadyCheck(port string) error {
+	client := &http.Client{Timeout: readyCheckTimeout}
+
+	url := "http://127.0.0.1:" + port + "/readyz"
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("probe %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// The body is a bounded diagnostic (status, reason, connection state) and is
+	// what makes a failing healthcheck readable in `docker inspect`.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxProbeBodyBytes))
+	trimmed := strings.TrimSpace(string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("not ready (HTTP %d): %s", resp.StatusCode, trimmed)
+	}
+
+	fmt.Println(trimmed)
 	return nil
 }
 

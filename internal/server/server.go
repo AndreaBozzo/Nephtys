@@ -18,13 +18,13 @@ import (
 type Server struct {
 	httpServer *http.Server
 	manager    *StreamManager
-	broker     *broker.Broker
+	broker     brokerHealth
 	logger     *slog.Logger
 }
 
 // New creates a new HTTP server wired to the given stream manager and broker.
-// If adminToken is non-empty, all endpoints except /health require a valid
-// Bearer token in the Authorization header.
+// If adminToken is non-empty, all endpoints except the probes and /metrics
+// require a valid Bearer token in the Authorization header.
 func New(port string, manager *StreamManager, brk *broker.Broker, adminToken string) *Server {
 	s := &Server{
 		manager: manager,
@@ -36,7 +36,14 @@ func New(port string, manager *StreamManager, brk *broker.Broker, adminToken str
 	s.registerRoutes(mux)
 
 	var handler http.Handler = mux
-	handler = bearerAuth(adminToken, map[string]bool{"/health": true, "/metrics": true})(handler)
+	// The probes stay public with a token configured: an orchestrator's kubelet
+	// carries no credentials, and they disclose one bounded connection state.
+	handler = bearerAuth(adminToken, map[string]bool{
+		"/livez":   true,
+		"/readyz":  true,
+		"/health":  true,
+		"/metrics": true,
+	})(handler)
 
 	s.httpServer = &http.Server{
 		Addr:         ":" + port,
@@ -62,6 +69,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // registerRoutes wires handlers to the HTTP mux.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /livez", s.handleLivez)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/streams", s.handleListStreams)
 	mux.HandleFunc("GET /v1/streams/{id}", s.handleGetStream)

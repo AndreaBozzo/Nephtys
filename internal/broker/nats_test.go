@@ -52,6 +52,48 @@ func TestConnect_Success(t *testing.T) {
 	}
 }
 
+// A broker outage is only survivable if the client keeps trying: the NATS
+// default is 60 attempts, after which the connection is closed for good and the
+// process can never publish again. Nothing observable distinguishes the two
+// policies inside a test of tolerable length — a bounded budget takes about two
+// minutes to exhaust — so this asserts the option the recovery path depends on.
+func TestConnect_ReconnectsIndefinitely(t *testing.T) {
+	srv := startTestServer(t)
+
+	brk, err := Connect(srv.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer brk.Close()
+
+	if got := brk.conn.Opts.MaxReconnect; got >= 0 {
+		t.Errorf("expected an unlimited reconnect budget, got %d attempts", got)
+	}
+	if brk.conn.Opts.ReconnectJitter <= 0 {
+		t.Error("expected reconnect jitter so instances do not retry in lockstep")
+	}
+}
+
+// ConnState is served by an endpoint with no auth, so it must stay inside the
+// client's own vocabulary rather than quoting a URL that can carry credentials.
+func TestConnState(t *testing.T) {
+	srv := startTestServer(t)
+
+	brk, err := Connect(srv.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	if got := brk.ConnState(); got != "CONNECTED" {
+		t.Errorf("expected CONNECTED, got %q", got)
+	}
+
+	brk.Close()
+	if got := brk.ConnState(); got == "CONNECTED" {
+		t.Errorf("expected a closed connection to stop reporting CONNECTED, got %q", got)
+	}
+}
+
 func TestConnect_BadURL(t *testing.T) {
 	_, err := Connect("nats://127.0.0.1:1", DefaultConfig())
 	if err == nil {

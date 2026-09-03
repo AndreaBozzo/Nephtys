@@ -28,6 +28,7 @@ Nephtys ingests live data streams (WebSocket, webhooks, Server-Sent Events, gRPC
 - [Usage Examples](#usage)
 - [REST API Reference](#rest-api)
 - [Configuration](#configuration)
+- [Probes](#probes)
 - [Supported Connectors](#supported-connectors)
 - [Stream Lifecycle](#stream-lifecycle)
 - [Pipeline Middlewares](#pipeline-middlewares)
@@ -276,7 +277,9 @@ When a connector emits raw binary data, Nephtys publishes it directly to NATS in
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Health check (Verifies internal NATS connectivity) |
+| `GET` | `/livez` | Liveness — is the process up? Checks no dependency; see [Probes](#probes) |
+| `GET` | `/readyz` | Readiness — can it accept and manage streams? `503` while the broker is unreachable |
+| `GET` | `/health` | Broker connectivity, always `200`. Superseded by `/livez` and `/readyz`, kept for compatibility |
 | `GET` | `/v1/streams` | List registered streams with status, health, last-message time, restart count, and last error |
 | `GET` | `/v1/streams/{id}` | One stream, plus the configuration it is actually running — see [Reading a stream back](#reading-a-stream-back) |
 | `POST` | `/v1/streams` | Register, save, and start a new stream. Answers only once the stream's resources are held — see [Stream Lifecycle](#stream-lifecycle) |
@@ -378,6 +381,7 @@ The dashboard JSON is committed and reviewed as source, so Grafana is configured
 nephtys --version                                   # print version (VCS-stamped) and exit
 nephtys --config-check docs/examples/sensor.json    # validate a stream config and exit (0 = ok, 1 = invalid)
 cat config.json | nephtys --config-check -          # same, from stdin (useful in CI)
+nephtys --ready-check                               # probe this instance's /readyz (0 = ready, 1 = not)
 ```
 
 ### Configuration validation
@@ -391,6 +395,58 @@ cat config.json | nephtys --config-check -          # same, from stdin (useful i
 - **Errors name the offending JSON path**, e.g. `pipeline.batch.flush_interval: "1 sec" is not a valid duration`.
 
 The same rules apply to `PUT /v1/streams/{id}/pipeline`, which returns 400 on anything `--config-check` rejects, and to configs restored from JetStream at startup — a persisted config the current validator rejects is skipped with a warning rather than started.
+
+## Probes
+
+`/livez` and `/readyz` answer different questions, and pointing one probe at both is how a broker outage turns into a restart loop.
+
+| | Checks | Answers | Point at it |
+|---|---|---|---|
+| `GET /livez` | nothing — only that the process is serving HTTP | `200` | Kubernetes `livenessProbe`, Docker `HEALTHCHECK` |
+| `GET /readyz` | the NATS/JetStream connection | `200` ready, `503` not ready | Kubernetes `readinessProbe`, load-balancer checks |
+
+Readiness is gated on the broker because that is what the instance needs to do its job: registering a stream writes its config to the JetStream KV bucket and every accepted event is published to JetStream, so a disconnected instance can serve reads and nothing else. Liveness checks no dependency at all — a broker outage is not something restarting Nephtys can fix, and a liveness probe that fails during one restarts every instance in the deployment for a fault none of them own.
+
+```console
+$ curl -s http://localhost:3002/readyz
+{"checks":{"broker":{"state":"CONNECTED","status":"ok"}},"status":"ready"}
+
+$ curl -s -o /dev/null -w '%{http_code}' http://localhost:3002/readyz   # broker down
+503
+$ curl -s http://localhost:3002/readyz
+{"checks":{"broker":{"state":"RECONNECTING","status":"unavailable"}},
+ "reason":"broker connection is not established","status":"unready"}
+```
+
+The NATS connection reconnects indefinitely, so a `503` resolves itself: when the broker comes back the instance is ready again with no restart, and the `state` field distinguishes an instance chasing a broker (`RECONNECTING`) from one whose connection is gone (`CLOSED`).
+
+Every string these endpoints return comes from a fixed set — the status words above and the NATS client's own connection-state names. Neither endpoint echoes the broker URL or a client error, both of which routinely carry credentials, which is what makes it safe for them to stay public when `NEPHTYS_ADMIN_TOKEN` is set. Orchestrator probes carry no bearer token, so `/livez`, `/readyz`, `/health` and `/metrics` are exempt from admin auth.
+
+A Kubernetes deployment wires them like this:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /livez, port: 3002 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /readyz, port: 3002 }
+  periodSeconds: 5
+```
+
+**In a container.** The runtime image is distroless — no shell, no `curl`, no `wget` — so a Docker or Kubernetes `exec` healthcheck has only the binary to call. `--ready-check` is that call: it GETs `/readyz` on `127.0.0.1:$NEPHTYS_PORT`, prints the body, and exits `0` when ready and `1` otherwise. It is what [`compose.yml`](compose.yml) uses:
+
+```yaml
+healthcheck:
+  test: ["CMD", "/nephtys", "--ready-check"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 5s
+```
+
+Docker restarts a container it considers unhealthy, so do not combine that with `restart: on-failure` unless you want a broker outage to cycle the container — the connection recovers on its own.
+
+`/health` is unchanged and not going away: it still answers `200` with `{"status":"ok"|"degraded"}`. That is precisely why it works as neither probe — it never fails, so nothing can be gated on it.
 
 ## Supported Connectors
 

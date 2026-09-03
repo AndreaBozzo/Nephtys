@@ -24,6 +24,13 @@ type Config struct {
 	StreamMaxBytes int64
 }
 
+// Reconnect pacing. The jitter is applied on both the plain and TLS paths so
+// several Nephtys instances losing one broker do not retry in lockstep.
+const (
+	reconnectWait   = 2 * time.Second
+	reconnectJitter = 500 * time.Millisecond
+)
+
 // DefaultConfig returns sensible defaults for JetStream.
 func DefaultConfig() Config {
 	return Config{
@@ -41,8 +48,19 @@ type Broker struct {
 }
 
 // Connect establishes a connection to the NATS server and initializes JetStream.
+//
+// The connection is configured to reconnect indefinitely. The client default is
+// 60 attempts, after which it closes the connection for good: a broker outage
+// longer than roughly two minutes would leave a process that can never publish
+// again and can only be fixed by restarting it. Readiness (`/readyz`) reports
+// the reconnect state, so an outage takes the instance out of rotation and
+// recovery puts it back without a restart.
 func Connect(url string, cfg Config) (*Broker, error) {
-	nc, err := nats.Connect(url)
+	nc, err := nats.Connect(url,
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(reconnectWait),
+		nats.ReconnectJitter(reconnectJitter, reconnectJitter),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("nats connect: %w", err)
 	}
@@ -144,6 +162,15 @@ func (b *Broker) JetStream() nats.JetStreamContext {
 // IsConnected returns true if the NATS connection is active.
 func (b *Broker) IsConnected() bool {
 	return b.conn.IsConnected()
+}
+
+// ConnState reports the connection's state as one of the NATS client's own
+// status names — CONNECTED, RECONNECTING, DISCONNECTED, CLOSED, DRAINING.
+// It is a closed set of literals with nothing of the operator's in it, which
+// is what makes it safe to serve from an endpoint that carries no auth: the
+// broker URL routinely holds credentials, and a NATS error quotes the URL.
+func (b *Broker) ConnState() string {
+	return b.conn.Status().String()
 }
 
 // Close drains and closes the NATS connection.

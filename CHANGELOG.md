@@ -9,6 +9,23 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ## [Unreleased]
 
 ### Added
+- `GET /livez` and `GET /readyz`, separating "is this process alive" from "can it accept and manage streams". (#30)
+
+  `/livez` checks nothing and always answers `200`. `/readyz` answers `200` when the NATS connection is up and `503` when it is not, with a bounded diagnostic:
+
+  ```json
+  {"status":"unready",
+   "reason":"broker connection is not established",
+   "checks":{"broker":{"status":"unavailable","state":"RECONNECTING"}}}
+  ```
+
+  The split exists because `/health` can be neither probe: it answers `200` whether or not the broker is reachable, so nothing can be gated on it — and an operator who makes it a liveness probe by adding "restart when the body says `degraded`" gets a broker outage restarting every instance in the deployment for a fault none of them own. Liveness therefore checks no dependency at all, and readiness checks the one the instance cannot work without: registering a stream writes its config to the JetStream KV bucket and every accepted event is published to JetStream, so a disconnected instance can serve reads and nothing else.
+
+  Every string in a probe response comes from a closed set — the status words above plus the NATS client's own connection-state names (`CONNECTED`, `RECONNECTING`, `DISCONNECTED`, `CLOSED`, `DRAINING`). Neither endpoint formats the broker URL or a client error into its body, both of which routinely carry credentials, which is what keeps them safe to serve without auth. Like `/health` and `/metrics`, both are exempt from `NEPHTYS_ADMIN_TOKEN`: an orchestrator's probe carries no bearer token.
+
+  `/health` is unchanged, still `200` with `{"status":"ok"|"degraded"}`, and documented as superseded rather than deprecated-with-a-date. No removal is scheduled.
+- `nephtys --ready-check`, which probes this instance's own `/readyz` over localhost and exits `0` when ready, `1` when not. The runtime image is distroless — no shell, no `curl`, no `wget` — so a container healthcheck has only the binary to call; `compose.yml`'s Nephtys service now uses it.
+
 - `GET /v1/streams/{id}`, returning a stream's `StreamInfo` fields plus the configuration it is actually running — the one it was registered with, amended by every accepted `PUT /v1/streams/{id}/pipeline`. (#43)
 
   Until now nothing could read a stream's config back. The effective pipeline was the sharper gap: a hot swap installs a new generation behind an `atomic.Pointer`, so after #28 made the update durable the applied pipeline still existed only as a closure — it could be requested, and not confirmed. Streams in a terminal `error` state are included, since those are the ones whose config an operator most needs to read.
@@ -43,6 +60,11 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
   A stream that spends its budget goes terminal and **stays registered**: `status: error`, `health: errored`, `nephtys_stream_state{state="errored"}`, and its config still stored.
 - `restart_count`, `last_error` and `last_error_at` on `GET /v1/streams`, plus the counter `nephtys_stream_restarts_total{stream_id}`. `restart_count` is cumulative over a stream's life rather than its position in the current budget, so it never decreases. A failed stream always carries a reason, including when its session ended without an error of its own. `last_error` is redacted before it is stored: it is served by an endpoint whose auth is optional, and connector errors quote the endpoint that failed, which routinely carries a token in a query string or in userinfo — those are stripped, and the unredacted error stays in the log.
 - `docs/LIFECYCLE.md` documents the whole lifecycle in one place — the state machine, the failure contract, the concurrency invariants — and the README links to it from Architecture, Supported Connectors, and a new Stream Lifecycle section.
+
+### Changed
+- The NATS connection now reconnects indefinitely (2s backoff with jitter) instead of taking the client's default budget of 60 attempts.
+
+  That default is what made a readiness probe worth having and, on its own, would have made it a trap: after roughly two minutes of broker downtime the client closed the connection for good, and the process stayed up publishing nothing, unrecoverable except by a restart. A `503` from `/readyz` now always resolves itself when the broker returns — which is exactly what a readiness probe promises an orchestrator, and what distinguishes "stop routing to this instance" from "restart this instance".
 
 ### Fixed
 - **Breaking (API status codes):** `201 Created` now means the connector started. `POST /v1/streams` persisted the config, launched the source in a goroutine and answered `201` without waiting, so the response certified only that a goroutine had been created. A webhook stream whose port was already taken answered `201`, reported `status: running` / `health: healthy` for the moment before its bind failed, and then sat in an error state that the caller had no reason to look for. (#59)
