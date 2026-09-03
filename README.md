@@ -174,8 +174,9 @@ docker run --rm ghcr.io/andreabozzo/nephtys:edge --version
 git clone https://github.com/AndreaBozzo/Nephtys.git
 cd Nephtys
 
-# Start NATS with JetStream, Prometheus, and a pre-provisioned Grafana
-docker compose up -d
+# Start NATS with JetStream (add Prometheus and a provisioned Grafana
+# with `make docker-up` instead, when you want the dashboard)
+make nats-up
 
 # Configure environment — `make run` exports this; the binary itself reads
 # only the environment, so any other launcher needs these exported directly
@@ -394,7 +395,7 @@ nephtys --ready-check                               # probe this instance's /rea
 - **The two counts that size an allocation are bounded at both ends.** `dedup.cache_size` preallocates its LRU map and `batch.max_batch_size` sizes the batch worker's channel buffer, so both are capped (1,000,000 and 100,000) as well as required to be positive — a stray zero should be a rejected config, not an out-of-memory kill. Both ceilings sit well above any supported workload; a batch near the upper one would already exceed NATS' 1 MB default `max_payload`.
 - **Errors name the offending JSON path**, e.g. `pipeline.batch.flush_interval: "1 sec" is not a valid duration`.
 
-The same rules apply to `PUT /v1/streams/{id}/pipeline`, which returns 400 on anything `--config-check` rejects, and to configs restored from JetStream at startup — a persisted config the current validator rejects is skipped with a warning rather than started.
+The same rules apply to `PUT /v1/streams/{id}/pipeline`, which returns 400 on anything `--config-check` rejects, and to configs restored from JetStream at startup — a persisted config the current validator rejects is registered in `error` state carrying the reason, rather than started or silently dropped. It stays visible in `GET /v1/streams` and removable, which is the point: at startup, "persisted but invisible" is the worst outcome available.
 
 ## Probes
 
@@ -566,15 +567,42 @@ make fmt             # Format the code (gofmt)
 make vet             # Run go vet
 make check-examples  # Validate every docs/examples/*.json with --config-check
 make all             # Run fmt + vet + test (the standard pre-commit cycle)
+make smoke           # End-to-end check against a running instance (see below)
 ```
+
+### Smoke test
+
+With an instance running (`make run`) and `NEPHTYS_ADMIN_TOKEN` set:
+
+```console
+$ make smoke
+smoke: instance ready — {"checks":{"broker":{"state":"CONNECTED","status":"ok"}},"status":"ready"}
+smoke: registering webhook stream 'smoke_check' on port 3099
+smoke: posting one event to the webhook
+smoke: event ingested and published
+smoke: OK
+```
+
+It registers a webhook stream, posts one event to it, reads the stream back to
+confirm `last_message_at` moved, and deletes the stream again — the whole path
+from HTTP in to a published JetStream event, with nothing but `curl`. A webhook
+source is used precisely because it needs no external network: the test supplies
+its own event, so a failure is Nephtys and not someone else's endpoint being
+down. Override `NEPHTYS_SMOKE_PORT` if 3099 is taken.
 
 ### Docker Management
 
 ```bash
-make docker-build # Build the production Docker image (add VERSION=v0.3.0 to stamp a release)
-make docker-up    # Start NATS JetStream for local development
+make nats-up      # Start NATS JetStream only — all the inner dev loop needs
+make docker-up    # Same, plus Prometheus and a provisioned Grafana
 make docker-down  # Stop and remove the local containers
+make docker-build # Build the production Docker image (add VERSION=v0.3.0 to stamp a release)
 ```
+
+Compose derives container names from the project (`nephtys-nats-1`) rather than
+pinning them, so this stack runs alongside a sibling one — the paper's
+benchmark stack, for instance. Published host ports still collide; only one
+stack can hold 4222 at a time.
 
 ## Contributing
 

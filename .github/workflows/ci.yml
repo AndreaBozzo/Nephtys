@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, not only those targeting main. A branch stacked on
+  # another feature branch is still a change that has to build, lint and pass
+  # its tests; with a base filter it silently got no CI at all until the branch
+  # under it merged, which is exactly when the result stops being useful.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read

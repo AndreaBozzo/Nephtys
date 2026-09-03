@@ -1,9 +1,18 @@
+# No service declares container_name. Container names are global to the Docker
+# daemon rather than scoped to the compose project, so a literal name here stops
+# any sibling stack that uses the same one from running alongside this one —
+# the paper's benchmark stack declares a NATS container too, and `docker compose
+# up` in this repo failed outright while it was up. Compose derives names from
+# the project instead (nephtys-nats-1), and everything inside the stack already
+# addresses services by service name over the compose network.
+#
+# Published host ports (4222, 8222, 3000, 3002, 9090, 8081) still collide; that
+# is inherent to publishing fixed ports, and is left to whoever runs both.
 services:
   nats:
     # alpine variant ships BusyBox wget, which the healthcheck below needs.
     # The default distroless nats image has no wget/shell, so the check never passes.
     image: nats:alpine
-    container_name: nephtys_nats
     restart: always
     ports:
       - "4222:4222"
@@ -24,7 +33,6 @@ services:
   # edit, `make run`, scrape over host.docker.internal — is unchanged.
   nephtys:
     image: ghcr.io/andreabozzo/nephtys:edge
-    container_name: nephtys_app
     profiles: ["nephtys"]
     restart: unless-stopped
     ports:
@@ -59,7 +67,6 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
-    container_name: nephtys_prometheus
     ports:
       - "9090:9090"
     volumes:
@@ -71,7 +78,6 @@ services:
 
   renderer:
     image: grafana/grafana-image-renderer:latest
-    container_name: nephtys_renderer
     ports:
       - "8081:8081"
     environment:
@@ -80,7 +86,6 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    container_name: nephtys_grafana
     ports:
       - "3000:3000"
     environment:

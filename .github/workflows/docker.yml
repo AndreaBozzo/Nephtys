@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # Every pull request, not only those targeting main — see the note in ci.yml.
   pull_request:
-    branches: [main]
 
 # Read-only by default. Only `publish` widens this, and only for itself.
 permissions:
