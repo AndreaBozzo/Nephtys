@@ -23,8 +23,13 @@ fi
 
 # Ask the instance whether it can accept streams at all. A readiness failure
 # here is the answer, not a symptom to chase through the steps below.
+#
+# The retry without -f is not redundant: -f makes curl exit non-zero on an HTTP
+# error *and* discard the body, so the 503 case — instance up, broker gone,
+# exactly the state worth reporting — would otherwise print nothing at all.
 if ! ready=$(curl -fsS "$API/readyz" 2>/dev/null); then
-	fail "$API/readyz did not answer 200. Is the instance running (make run) and NATS up (make nats-up)? Last response: ${ready:-none}"
+	detail=$(curl -sS "$API/readyz" 2>&1 || true)
+	fail "$API/readyz did not answer 200. Is the instance running (make run) and NATS up (make nats-up)? It said: ${detail:-nothing}"
 fi
 echo "smoke: instance ready — $ready"
 
@@ -54,19 +59,28 @@ curl -fsS -X POST "http://127.0.0.1:$HOOK_PORT/smoke" \
 # Ingest is asynchronous: the webhook answers as soon as the event is accepted,
 # and last_message_at is written as it leaves the pipeline. Poll rather than
 # sleep a fixed amount, so a slow machine does not produce a false failure.
+#
+# The read is guarded rather than left to `set -e`: an unguarded failure inside
+# the loop would exit the script with no message at all, which is the one thing
+# a smoke test must never do. Whole-second sleeps because POSIX sleep takes an
+# integer; the first read happens before any sleep, so the usual case is still
+# immediate.
 i=0
-while [ "$i" -lt 50 ]; do
-	stream=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$API/v1/streams/$STREAM_ID")
-	case "$stream" in
-	*'"last_message_at"'*)
-		echo "smoke: event ingested and published"
-		echo "smoke: $stream"
-		echo "smoke: OK"
-		exit 0
-		;;
-	esac
+while [ "$i" -lt 15 ]; do
+	if stream=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$API/v1/streams/$STREAM_ID" 2>/dev/null); then
+		case "$stream" in
+		*'"last_message_at"'*)
+			echo "smoke: event ingested and published"
+			echo "smoke: $stream"
+			echo "smoke: OK"
+			exit 0
+			;;
+		esac
+	else
+		stream=$(curl -sS -H "Authorization: Bearer $TOKEN" "$API/v1/streams/$STREAM_ID" 2>&1 || true)
+	fi
 	i=$((i + 1))
-	sleep 0.1
+	sleep 1
 done
 
-fail "the event never reached the stream. Last read: ${stream:-none}"
+fail "the event never reached the stream after ${i}s. Last read: ${stream:-nothing}"
