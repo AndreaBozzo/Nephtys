@@ -1,9 +1,9 @@
 ---
-name: addressing-copilot-reviews
+name: code-review
 description: Reads, verifies, and answers a GitHub Copilot code review on a Nephtys pull request, including the suppressed findings the pull-request comments API does not return. Covers reading both halves of a review, checking each finding against the source before acting, replying to and resolving review threads with gh, and requesting a re-review. Use when a Copilot review lands on a PR, when asked to address review comments or review feedback, or before merging a PR that has an open review.
 ---
 
-# Addressing a Copilot review
+# Handling a Copilot code review
 
 Copilot reviews Nephtys PRs on request. Its findings usually point at something
 real; its *specifics* are wrong often enough that acting on one without checking
