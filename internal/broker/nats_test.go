@@ -52,6 +52,114 @@ func TestConnect_Success(t *testing.T) {
 	}
 }
 
+// A broker outage is only survivable if the client keeps trying: the NATS
+// default is 60 attempts, after which the connection is closed for good and the
+// process can never publish again. Nothing observable distinguishes the two
+// policies inside a test of tolerable length — a bounded budget takes about two
+// minutes to exhaust — so this asserts the option the recovery path depends on.
+func TestConnect_ReconnectsIndefinitely(t *testing.T) {
+	srv := startTestServer(t)
+
+	brk, err := Connect(srv.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer brk.Close()
+
+	if got := brk.conn.Opts.MaxReconnect; got >= 0 {
+		t.Errorf("expected an unlimited reconnect budget, got %d attempts", got)
+	}
+	if brk.conn.Opts.ReconnectJitter <= 0 {
+		t.Error("expected reconnect jitter so instances do not retry in lockstep")
+	}
+}
+
+// ConnReady's state is served by an endpoint with no auth, so it must stay
+// inside the client's own vocabulary rather than quoting a URL that can carry
+// credentials. The set below is every string nats.Status.String() can return;
+// the probe documentation publishes it, so a client upgrade that adds a state
+// should fail here rather than silently widen what the endpoint says.
+//
+// The pair is also checked for self-consistency in both states: the readiness
+// half and the state half come from one read, so "ready" and a state other than
+// CONNECTED can never appear together.
+func TestConnReady(t *testing.T) {
+	known := map[string]bool{
+		"CONNECTED":      true,
+		"CONNECTING":     true,
+		"RECONNECTING":   true,
+		"DISCONNECTED":   true,
+		"CLOSED":         true,
+		"DRAINING_SUBS":  true,
+		"DRAINING_PUBS":  true,
+		"unknown status": true,
+	}
+
+	srv := startTestServer(t)
+
+	brk, err := Connect(srv.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	ready, state := brk.ConnReady()
+	if !ready || state != "CONNECTED" {
+		t.Errorf("expected (true, CONNECTED), got (%v, %q)", ready, state)
+	}
+
+	brk.Close()
+	ready, state = brk.ConnReady()
+	if ready || state == "CONNECTED" {
+		t.Errorf("expected a closed connection to report not-ready and some other state, got (%v, %q)", ready, state)
+	}
+	if !known[state] {
+		t.Errorf("ConnReady returned state %q, which is not in the documented set", state)
+	}
+	if ready != (state == "CONNECTED") {
+		t.Errorf("readiness %v contradicts state %q", ready, state)
+	}
+}
+
+// Readiness turns on this being a different question from IsConnected: a server
+// with JetStream switched off still accepts a connection and still serves core
+// NATS, and nothing Nephtys persists or publishes would work.
+func TestJetStreamAvailable(t *testing.T) {
+	withJS := startTestServer(t)
+	brk, err := Connect(withJS.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer brk.Close()
+
+	if !brk.JetStreamAvailable() {
+		t.Error("expected JetStream to be available on a JetStream-enabled server")
+	}
+
+	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: false}
+	plain, err := natsserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("create plain server: %v", err)
+	}
+	plain.Start()
+	if !plain.ReadyForConnections(5 * time.Second) {
+		t.Fatal("plain nats server not ready")
+	}
+	defer plain.Shutdown()
+
+	plainBrk, err := Connect(plain.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect to plain server: %v", err)
+	}
+	defer plainBrk.Close()
+
+	if !plainBrk.IsConnected() {
+		t.Fatal("expected the connection itself to be up")
+	}
+	if plainBrk.JetStreamAvailable() {
+		t.Error("expected JetStream to be unavailable on a server without it")
+	}
+}
+
 func TestConnect_BadURL(t *testing.T) {
 	_, err := Connect("nats://127.0.0.1:1", DefaultConfig())
 	if err == nil {

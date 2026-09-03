@@ -24,6 +24,18 @@ type Config struct {
 	StreamMaxBytes int64
 }
 
+// Reconnect pacing. The jitter is applied on both the plain and TLS paths so
+// several Nephtys instances losing one broker do not retry in lockstep.
+const (
+	reconnectWait   = 2 * time.Second
+	reconnectJitter = 500 * time.Millisecond
+)
+
+// jetStreamProbeTimeout bounds the round trip JetStreamAvailable makes. It is
+// short because a readiness probe that hangs has already failed: the caller
+// gets to decide what "not ready" means, and waiting is not one of the options.
+const jetStreamProbeTimeout = 2 * time.Second
+
 // DefaultConfig returns sensible defaults for JetStream.
 func DefaultConfig() Config {
 	return Config{
@@ -41,8 +53,19 @@ type Broker struct {
 }
 
 // Connect establishes a connection to the NATS server and initializes JetStream.
+//
+// The connection is configured to reconnect indefinitely. The client default is
+// 60 attempts, after which it closes the connection for good: a broker outage
+// longer than roughly two minutes would leave a process that can never publish
+// again and can only be fixed by restarting it. Readiness (`/readyz`) reports
+// the reconnect state, so an outage takes the instance out of rotation and
+// recovery puts it back without a restart.
 func Connect(url string, cfg Config) (*Broker, error) {
-	nc, err := nats.Connect(url)
+	nc, err := nats.Connect(url,
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(reconnectWait),
+		nats.ReconnectJitter(reconnectJitter, reconnectJitter),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("nats connect: %w", err)
 	}
@@ -144,6 +167,48 @@ func (b *Broker) JetStream() nats.JetStreamContext {
 // IsConnected returns true if the NATS connection is active.
 func (b *Broker) IsConnected() bool {
 	return b.conn.IsConnected()
+}
+
+// ConnReady reports whether the connection can carry new work, together with
+// the client's name for the state that decision came from.
+//
+// Both come from a single status read. Asking "is it connected?" and "what is
+// its state?" separately is two reads of a value that moves between them, and a
+// probe response pairing "ok" with RECONNECTING — or 503 with CONNECTED — is a
+// self-contradiction someone has to spend time on. There is deliberately no
+// second accessor for the state alone.
+//
+// The state is one of the NATS client's own status names, a closed set: exactly
+// what nats.Status.String() returns — CONNECTED, CONNECTING, RECONNECTING,
+// DISCONNECTED, CLOSED, DRAINING_SUBS, DRAINING_PUBS, and "unknown status" for a
+// value the client itself does not recognize. Nothing of the operator's appears
+// in it, which is what makes it safe to serve from an endpoint that carries no
+// auth: the broker URL routinely holds credentials, and a NATS error quotes it.
+//
+// Readiness here is stricter than IsConnected, which also answers true while the
+// connection drains its subscriptions. A draining connection belongs to a
+// process on its way out, and "stop sending work here" is the right readiness
+// answer; IsConnected keeps its own meaning for /health, which is unchanged.
+func (b *Broker) ConnReady() (bool, string) {
+	status := b.conn.Status()
+	return status == nats.CONNECTED, status.String()
+}
+
+// JetStreamAvailable reports whether JetStream answers on this connection.
+//
+// It is a separate question from IsConnected, and readiness needs both: a NATS
+// server can be connected and serving core NATS while JetStream is disabled,
+// unprovisioned for the account, or has lost quorum. Every write Nephtys makes
+// goes through JetStream — stream configs to the KV bucket, events to the
+// stream — so a connection without it is not an instance that can accept work.
+//
+// This costs one request/reply round trip to the broker, bounded by
+// jetStreamProbeTimeout, so it is only worth asking on a probe and only when
+// the connection is up. The error is deliberately discarded rather than
+// reported: it can quote the broker URL, and a probe response is public.
+func (b *Broker) JetStreamAvailable() bool {
+	_, err := b.js.AccountInfo(nats.MaxWait(jetStreamProbeTimeout))
+	return err == nil
 }
 
 // Close drains and closes the NATS connection.

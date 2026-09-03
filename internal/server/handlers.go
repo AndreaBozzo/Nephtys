@@ -10,15 +10,23 @@ import (
 )
 
 // handleHealth responds with broker connectivity status.
+//
+// Superseded by /livez and /readyz, and kept unchanged: it answers
+// 200 whatever the broker is doing, which makes it useless as a readiness
+// signal and misleading as a liveness one. Existing probes pointed at it keep
+// working; new ones should use /livez for "is the process alive" and /readyz
+// for "can it accept streams". No removal is scheduled.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	connected := s.broker.IsConnected()
+
 	status := "ok"
-	if !s.broker.IsConnected() {
+	if !connected {
 		status = "degraded"
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": status,
-		"broker": boolToStatus(s.broker.IsConnected()),
+		"broker": boolToStatus(connected),
 	})
 }
 

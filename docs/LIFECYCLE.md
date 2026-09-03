@@ -347,11 +347,15 @@ having no HTTP caller to answer.
 Process-level readiness needed nothing new: `runService` completes `Restore`
 before `srv.Start()`, so the REST API never serves a request while the stream
 set is half-built. That ordering is now load-bearing and is commented as such.
-`/health` still reports broker connectivity only — per-stream failure is what
-`nephtys_stream_state{state="errored"}` is for, and folding it into the liveness
-endpoint would make one dead stream look like a dead process. The roadmap's
-separate liveness and readiness probes remain a distinct item; this gives them a
-well-defined "restore complete" moment to key on.
+`/livez`, `/readyz` and `/health` all report process- and broker-level state
+only — per-stream failure is what `nephtys_stream_state{state="errored"}` is
+for, and folding it into either probe would make one dead stream look like a
+dead instance. `/readyz` is broker-gated because a disconnected instance can
+neither persist a registration nor publish an event; `/livez` checks nothing,
+because a broker outage is not a fault restarting the process can repair. The
+`Restore`-before-`Start` ordering is what lets `/readyz` mean "ready" the first
+time it is asked: the REST API does not serve a request until the stream set is
+built, so there is no window in which a ready instance has half its streams.
 
 ## 7. Concurrency invariants
 

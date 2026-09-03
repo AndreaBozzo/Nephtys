@@ -5,8 +5,13 @@ import (
 	"flag"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +192,92 @@ func TestRun_ConfigCheckFlag_Invalid(t *testing.T) {
 	if err := run(); err == nil {
 		t.Fatal("run(--config-check garbage) returned nil, want error")
 	}
+}
+
+// --ready-check is what a distroless container healthcheck runs, so it has to
+// mean the same thing as an HTTP GET on /readyz: exit 0 on 200, non-zero on
+// anything else, including nothing listening at all.
+func TestRunReadyCheck(t *testing.T) {
+	cases := []struct {
+		name    string
+		code    int
+		body    string
+		wantErr string
+	}{
+		{name: "ready", code: http.StatusOK, body: `{"status":"ready"}`},
+		{
+			name:    "unready",
+			code:    http.StatusServiceUnavailable,
+			body:    `{"status":"unready","reason":"broker connection is not established"}`,
+			wantErr: "broker connection is not established",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				w.WriteHeader(tc.code)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			t.Cleanup(srv.Close)
+
+			err := runReadyCheck(portOf(t, srv.URL))
+
+			if gotPath != "/readyz" {
+				t.Errorf("probed %q, want /readyz", gotPath)
+			}
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("expected a ready instance to exit 0, got error: %v", err)
+			case tc.wantErr != "" && err == nil:
+				t.Error("expected an unready instance to return an error")
+			case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
+				t.Errorf("error %q does not carry the probe's reason", err)
+			}
+		})
+	}
+}
+
+// Nothing listening is not ready either: a healthcheck must fail while the
+// process is still starting up, not hang or pass.
+func TestRunReadyCheck_NoListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if err := runReadyCheck(port); err == nil {
+		t.Fatal("expected an error when nothing is listening")
+	}
+}
+
+func TestRun_ReadyCheckFlag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"ready"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv("NEPHTYS_PORT", portOf(t, srv.URL))
+	withArgs(t, []string{"--ready-check"})
+
+	if err := run(); err != nil {
+		t.Errorf("run(--ready-check) against a ready instance: %v", err)
+	}
+}
+
+func portOf(t *testing.T, rawURL string) string {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse %q: %v", rawURL, err)
+	}
+	return u.Port()
 }
 
 func TestRunConfigCheck_StdinTooLarge(t *testing.T) {
