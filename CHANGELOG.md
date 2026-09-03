@@ -9,6 +9,7 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ## [Unreleased]
 
 ### Added
+- `.claude/skills/copilot-review/SKILL.md`, a repository skill for working through a Copilot review on a Nephtys PR: how to read the half of a review the comments API does not return (a suppressed finding on #72 was the sharpest comment in it and appears only in the review body), how to verify a finding against the source before acting on it, and how to reply to and resolve threads. Every command in it was run against this repository, and it carries the accuracy record so far — eight findings, all pointing at something real, two with inaccurate specifics.
 - `make smoke`, an end-to-end check against a running instance: it registers a webhook stream, posts one event to it, reads the stream back to confirm `last_message_at` moved, and deletes the stream again. A webhook source is used precisely because it needs no external network — the test supplies its own event, so a failure is Nephtys and not someone else's endpoint being down. `curl` is the only dependency.
 - `make nats-up`, which starts NATS alone. `make docker-up` also brings up Prometheus, Grafana and the image renderer, which is what you want when working on the dashboard and three containers of overhead otherwise — and the README described it as "Start NATS JetStream for local development", which is what it stopped being when the dashboard landed.
 - `GET /livez` and `GET /readyz`, separating "is this process alive" from "can it accept and manage streams". (#30)

@@ -73,6 +73,13 @@ suddenly reports every file as unformatted, that is what happened.
   Say what changed and why it changed; the changelog is where the reasoning
   lives.
 
+PRs here are reviewed by GitHub Copilot on request. If you use Claude Code, the
+repository ships a skill for working through one —
+[`.claude/skills/copilot-review/SKILL.md`](../.claude/skills/copilot-review/SKILL.md)
+— which is also worth reading on its own: it records where those reviews have
+been reliable, where they have been confidently wrong, and the part of a review
+the comments API does not return.
+
 `docs/LIFECYCLE.md` is the reference for how a stream is admitted, supervised,
 restarted, and retired — read it before changing the manager, the supervisor, or
 a connector's `Open`/`Run`/`Close`.
