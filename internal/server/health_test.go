@@ -21,8 +21,8 @@ type stubBroker struct {
 	jetStreamCalls *int
 }
 
-func (b stubBroker) IsConnected() bool { return b.connected }
-func (b stubBroker) ConnState() string { return b.state }
+func (b stubBroker) IsConnected() bool         { return b.connected }
+func (b stubBroker) ConnReady() (bool, string) { return b.connected, b.state }
 func (b stubBroker) JetStreamAvailable() bool {
 	if b.jetStreamCalls != nil {
 		*b.jetStreamCalls++

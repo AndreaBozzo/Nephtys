@@ -9,9 +9,13 @@ import (
 // *broker.Broker, so a probe test can present a disconnected dependency
 // without standing up a NATS server to break.
 type brokerHealth interface {
-	IsConnected() bool
-	ConnState() string
+	// ConnReady returns the readiness decision and the connection state it was
+	// derived from, together, so the two cannot disagree in one response.
+	ConnReady() (bool, string)
 	JetStreamAvailable() bool
+
+	// IsConnected backs /health, whose output is frozen.
+	IsConnected() bool
 }
 
 // Probe response literals. Both endpoints answer from a closed set of strings:
@@ -58,7 +62,7 @@ func (s *Server) handleLivez(w http.ResponseWriter, r *http.Request) {
 // reconnects indefinitely, so readiness returns on its own once the broker is
 // back.
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	brokerOK := s.broker.IsConnected()
+	brokerOK, connState := s.broker.ConnReady()
 
 	jetStreamStatus := checkUnknown
 	jetStreamOK := false
@@ -70,7 +74,7 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	checks := map[string]any{
 		"broker": map[string]any{
 			"status": checkStatus(brokerOK),
-			"state":  s.broker.ConnState(),
+			"state":  connState,
 		},
 		"jetstream": map[string]any{
 			"status": jetStreamStatus,

@@ -74,12 +74,16 @@ func TestConnect_ReconnectsIndefinitely(t *testing.T) {
 	}
 }
 
-// ConnState is served by an endpoint with no auth, so it must stay inside the
-// client's own vocabulary rather than quoting a URL that can carry credentials.
-// The set below is every string nats.Status.String() can return; the probe
-// documentation publishes it, so a client upgrade that adds a state should fail
-// here rather than silently widen what the endpoint says.
-func TestConnState(t *testing.T) {
+// ConnReady's state is served by an endpoint with no auth, so it must stay
+// inside the client's own vocabulary rather than quoting a URL that can carry
+// credentials. The set below is every string nats.Status.String() can return;
+// the probe documentation publishes it, so a client upgrade that adds a state
+// should fail here rather than silently widen what the endpoint says.
+//
+// The pair is also checked for self-consistency in both states: the readiness
+// half and the state half come from one read, so "ready" and a state other than
+// CONNECTED can never appear together.
+func TestConnReady(t *testing.T) {
 	known := map[string]bool{
 		"CONNECTED":      true,
 		"CONNECTING":     true,
@@ -98,17 +102,21 @@ func TestConnState(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 
-	if got := brk.ConnState(); got != "CONNECTED" {
-		t.Errorf("expected CONNECTED, got %q", got)
+	ready, state := brk.ConnReady()
+	if !ready || state != "CONNECTED" {
+		t.Errorf("expected (true, CONNECTED), got (%v, %q)", ready, state)
 	}
 
 	brk.Close()
-	after := brk.ConnState()
-	if after == "CONNECTED" {
-		t.Errorf("expected a closed connection to stop reporting CONNECTED, got %q", after)
+	ready, state = brk.ConnReady()
+	if ready || state == "CONNECTED" {
+		t.Errorf("expected a closed connection to report not-ready and some other state, got (%v, %q)", ready, state)
 	}
-	if !known[after] {
-		t.Errorf("ConnState returned %q, which is not in the documented set", after)
+	if !known[state] {
+		t.Errorf("ConnReady returned state %q, which is not in the documented set", state)
+	}
+	if ready != (state == "CONNECTED") {
+		t.Errorf("readiness %v contradicts state %q", ready, state)
 	}
 }
 

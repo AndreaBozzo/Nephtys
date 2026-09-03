@@ -169,15 +169,29 @@ func (b *Broker) IsConnected() bool {
 	return b.conn.IsConnected()
 }
 
-// ConnState reports the connection's state as one of the NATS client's own
-// status names. The set is closed and is exactly what nats.Status.String()
-// can return: CONNECTED, CONNECTING, RECONNECTING, DISCONNECTED, CLOSED,
-// DRAINING_SUBS, DRAINING_PUBS, and "unknown status" for a value the client
-// itself does not recognize. Nothing of the operator's appears in it, which is
-// what makes it safe to serve from an endpoint that carries no auth: the broker
-// URL routinely holds credentials, and a NATS error quotes the URL.
-func (b *Broker) ConnState() string {
-	return b.conn.Status().String()
+// ConnReady reports whether the connection can carry new work, together with
+// the client's name for the state that decision came from.
+//
+// Both come from a single status read. Asking "is it connected?" and "what is
+// its state?" separately is two reads of a value that moves between them, and a
+// probe response pairing "ok" with RECONNECTING — or 503 with CONNECTED — is a
+// self-contradiction someone has to spend time on. There is deliberately no
+// second accessor for the state alone.
+//
+// The state is one of the NATS client's own status names, a closed set: exactly
+// what nats.Status.String() returns — CONNECTED, CONNECTING, RECONNECTING,
+// DISCONNECTED, CLOSED, DRAINING_SUBS, DRAINING_PUBS, and "unknown status" for a
+// value the client itself does not recognize. Nothing of the operator's appears
+// in it, which is what makes it safe to serve from an endpoint that carries no
+// auth: the broker URL routinely holds credentials, and a NATS error quotes it.
+//
+// Readiness here is stricter than IsConnected, which also answers true while the
+// connection drains its subscriptions. A draining connection belongs to a
+// process on its way out, and "stop sending work here" is the right readiness
+// answer; IsConnected keeps its own meaning for /health, which is unchanged.
+func (b *Broker) ConnReady() (bool, string) {
+	status := b.conn.Status()
+	return status == nats.CONNECTED, status.String()
 }
 
 // JetStreamAvailable reports whether JetStream answers on this connection.

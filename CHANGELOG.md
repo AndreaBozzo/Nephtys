@@ -20,6 +20,8 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
              "jetstream":{"status":"unknown"}}}
   ```
 
+  The readiness decision and the `state` beside it come from a single status read, so a response cannot pair `ok` with `RECONNECTING`, or a 503 with `CONNECTED`. That read is also stricter than the client's `IsConnected`, which stays true while a connection drains its subscriptions: a draining connection belongs to a process on its way out, and "stop sending work here" is the right readiness answer. `/health` is unaffected and still reports `IsConnected`.
+
   It is two checks because a connection being up does not mean JetStream is: a NATS server can serve core NATS with JetStream disabled, unprovisioned for the account, or short of quorum, and every write Nephtys makes goes through JetStream. The JetStream check is one bounded round trip and is only made while the connection is up — over a dead connection it could only time out — so it reports `unknown` rather than a second failure, and the reason names the dependency that actually failed.
 
   The split exists because `/health` can be neither probe: it answers `200` whether or not the broker is reachable, so nothing can be gated on it — and an operator who makes it a liveness probe by adding "restart when the body says `degraded`" gets a broker outage restarting every instance in the deployment for a fault none of them own. Liveness therefore checks no dependency at all, and readiness checks the one the instance cannot work without: registering a stream writes its config to the JetStream KV bucket and every accepted event is published to JetStream, so a disconnected instance can serve reads and nothing else.
