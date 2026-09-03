@@ -75,7 +75,7 @@ suddenly reports every file as unformatted, that is what happened.
 
 PRs here are reviewed by GitHub Copilot on request. If you use Claude Code, the
 repository ships a skill for working through one —
-[`.claude/skills/copilot-review/SKILL.md`](../.claude/skills/copilot-review/SKILL.md)
+[`.claude/skills/addressing-copilot-reviews/SKILL.md`](../.claude/skills/addressing-copilot-reviews/SKILL.md)
 — which is also worth reading on its own: it records where those reviews have
 been reliable, where they have been confidently wrong, and the part of a review
 the comments API does not return.
