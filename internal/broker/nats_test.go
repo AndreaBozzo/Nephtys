@@ -76,7 +76,21 @@ func TestConnect_ReconnectsIndefinitely(t *testing.T) {
 
 // ConnState is served by an endpoint with no auth, so it must stay inside the
 // client's own vocabulary rather than quoting a URL that can carry credentials.
+// The set below is every string nats.Status.String() can return; the probe
+// documentation publishes it, so a client upgrade that adds a state should fail
+// here rather than silently widen what the endpoint says.
 func TestConnState(t *testing.T) {
+	known := map[string]bool{
+		"CONNECTED":      true,
+		"CONNECTING":     true,
+		"RECONNECTING":   true,
+		"DISCONNECTED":   true,
+		"CLOSED":         true,
+		"DRAINING_SUBS":  true,
+		"DRAINING_PUBS":  true,
+		"unknown status": true,
+	}
+
 	srv := startTestServer(t)
 
 	brk, err := Connect(srv.ClientURL(), DefaultConfig())
@@ -89,8 +103,52 @@ func TestConnState(t *testing.T) {
 	}
 
 	brk.Close()
-	if got := brk.ConnState(); got == "CONNECTED" {
-		t.Errorf("expected a closed connection to stop reporting CONNECTED, got %q", got)
+	after := brk.ConnState()
+	if after == "CONNECTED" {
+		t.Errorf("expected a closed connection to stop reporting CONNECTED, got %q", after)
+	}
+	if !known[after] {
+		t.Errorf("ConnState returned %q, which is not in the documented set", after)
+	}
+}
+
+// Readiness turns on this being a different question from IsConnected: a server
+// with JetStream switched off still accepts a connection and still serves core
+// NATS, and nothing Nephtys persists or publishes would work.
+func TestJetStreamAvailable(t *testing.T) {
+	withJS := startTestServer(t)
+	brk, err := Connect(withJS.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer brk.Close()
+
+	if !brk.JetStreamAvailable() {
+		t.Error("expected JetStream to be available on a JetStream-enabled server")
+	}
+
+	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: false}
+	plain, err := natsserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("create plain server: %v", err)
+	}
+	plain.Start()
+	if !plain.ReadyForConnections(5 * time.Second) {
+		t.Fatal("plain nats server not ready")
+	}
+	defer plain.Shutdown()
+
+	plainBrk, err := Connect(plain.ClientURL(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("connect to plain server: %v", err)
+	}
+	defer plainBrk.Close()
+
+	if !plainBrk.IsConnected() {
+		t.Fatal("expected the connection itself to be up")
+	}
+	if plainBrk.JetStreamAvailable() {
+		t.Error("expected JetStream to be unavailable on a server without it")
 	}
 }
 

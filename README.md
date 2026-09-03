@@ -402,25 +402,27 @@ The same rules apply to `PUT /v1/streams/{id}/pipeline`, which returns 400 on an
 
 | | Checks | Answers | Point at it |
 |---|---|---|---|
-| `GET /livez` | nothing — only that the process is serving HTTP | `200` | Kubernetes `livenessProbe`, Docker `HEALTHCHECK` |
-| `GET /readyz` | the NATS/JetStream connection | `200` ready, `503` not ready | Kubernetes `readinessProbe`, load-balancer checks |
+| `GET /livez` | nothing — only that the process is serving HTTP | `200` | Kubernetes `livenessProbe` |
+| `GET /readyz` | the broker connection, and JetStream on it | `200` ready, `503` not ready | Kubernetes `readinessProbe`, load-balancer checks, Docker `HEALTHCHECK` |
 
-Readiness is gated on the broker because that is what the instance needs to do its job: registering a stream writes its config to the JetStream KV bucket and every accepted event is published to JetStream, so a disconnected instance can serve reads and nothing else. Liveness checks no dependency at all — a broker outage is not something restarting Nephtys can fix, and a liveness probe that fails during one restarts every instance in the deployment for a fault none of them own.
+Readiness is gated on the broker because that is what the instance needs to do its job: registering a stream writes its config to the JetStream KV bucket and every accepted event is published to JetStream, so an instance without it can serve reads and nothing else. It is two checks rather than one, because the connection being up does not mean JetStream is: a NATS server can serve core NATS with JetStream disabled, unprovisioned for the account, or short of quorum. `/readyz` therefore asks JetStream directly, one bounded round trip, and only while the connection is up — over a dead connection that request could only time out, so the check reports `unknown` rather than inventing a second failure. Liveness checks no dependency at all — a broker outage is not something restarting Nephtys can fix, and a liveness probe that fails during one restarts every instance in the deployment for a fault none of them own.
 
 ```console
 $ curl -s http://localhost:3002/readyz
-{"checks":{"broker":{"state":"CONNECTED","status":"ok"}},"status":"ready"}
+{"checks":{"broker":{"state":"CONNECTED","status":"ok"},"jetstream":{"status":"ok"}},
+ "status":"ready"}
 
 $ curl -s -o /dev/null -w '%{http_code}' http://localhost:3002/readyz   # broker down
 503
 $ curl -s http://localhost:3002/readyz
-{"checks":{"broker":{"state":"RECONNECTING","status":"unavailable"}},
+{"checks":{"broker":{"state":"RECONNECTING","status":"unavailable"},
+           "jetstream":{"status":"unknown"}},
  "reason":"broker connection is not established","status":"unready"}
 ```
 
 The NATS connection reconnects indefinitely, so a `503` resolves itself: when the broker comes back the instance is ready again with no restart, and the `state` field distinguishes an instance chasing a broker (`RECONNECTING`) from one whose connection is gone (`CLOSED`).
 
-Every string these endpoints return comes from a fixed set — the status words above and the NATS client's own connection-state names. Neither endpoint echoes the broker URL or a client error, both of which routinely carry credentials, which is what makes it safe for them to stay public when `NEPHTYS_ADMIN_TOKEN` is set. Orchestrator probes carry no bearer token, so `/livez`, `/readyz`, `/health` and `/metrics` are exempt from admin auth.
+Every string these endpoints return comes from a fixed set: the statuses `ready`, `unready`, `alive`, `ok`, `unavailable` and `unknown`, the two reasons above, and the NATS client's own connection-state names — `CONNECTED`, `CONNECTING`, `RECONNECTING`, `DISCONNECTED`, `CLOSED`, `DRAINING_SUBS`, `DRAINING_PUBS`, and `unknown status` for a value the client itself does not recognize. Neither endpoint echoes the broker URL or a client error, both of which routinely carry credentials, which is what makes it safe for them to stay public when `NEPHTYS_ADMIN_TOKEN` is set. Orchestrator probes carry no bearer token, so `/livez`, `/readyz`, `/health` and `/metrics` are exempt from admin auth.
 
 A Kubernetes deployment wires them like this:
 
@@ -444,7 +446,7 @@ healthcheck:
   start_period: 5s
 ```
 
-Docker restarts a container it considers unhealthy, so do not combine that with `restart: on-failure` unless you want a broker outage to cycle the container — the connection recovers on its own.
+Docker Engine does **not** restart a container for failing its healthcheck — restart policies react to the main process exiting — so a broker outage marks the container unhealthy and leaves it running, which is what you want here: the connection recovers by itself. What health status does drive is another service's `depends_on: condition: service_healthy`. (Swarm is the exception: it reschedules a task whose container goes unhealthy.)
 
 `/health` is unchanged and not going away: it still answers `200` with `{"status":"ok"|"degraded"}`. That is precisely why it works as neither probe — it never fails, so nothing can be gated on it.
 

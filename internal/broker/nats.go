@@ -31,6 +31,11 @@ const (
 	reconnectJitter = 500 * time.Millisecond
 )
 
+// jetStreamProbeTimeout bounds the round trip JetStreamAvailable makes. It is
+// short because a readiness probe that hangs has already failed: the caller
+// gets to decide what "not ready" means, and waiting is not one of the options.
+const jetStreamProbeTimeout = 2 * time.Second
+
 // DefaultConfig returns sensible defaults for JetStream.
 func DefaultConfig() Config {
 	return Config{
@@ -165,12 +170,31 @@ func (b *Broker) IsConnected() bool {
 }
 
 // ConnState reports the connection's state as one of the NATS client's own
-// status names — CONNECTED, RECONNECTING, DISCONNECTED, CLOSED, DRAINING.
-// It is a closed set of literals with nothing of the operator's in it, which
-// is what makes it safe to serve from an endpoint that carries no auth: the
-// broker URL routinely holds credentials, and a NATS error quotes the URL.
+// status names. The set is closed and is exactly what nats.Status.String()
+// can return: CONNECTED, CONNECTING, RECONNECTING, DISCONNECTED, CLOSED,
+// DRAINING_SUBS, DRAINING_PUBS, and "unknown status" for a value the client
+// itself does not recognize. Nothing of the operator's appears in it, which is
+// what makes it safe to serve from an endpoint that carries no auth: the broker
+// URL routinely holds credentials, and a NATS error quotes the URL.
 func (b *Broker) ConnState() string {
 	return b.conn.Status().String()
+}
+
+// JetStreamAvailable reports whether JetStream answers on this connection.
+//
+// It is a separate question from IsConnected, and readiness needs both: a NATS
+// server can be connected and serving core NATS while JetStream is disabled,
+// unprovisioned for the account, or has lost quorum. Every write Nephtys makes
+// goes through JetStream — stream configs to the KV bucket, events to the
+// stream — so a connection without it is not an instance that can accept work.
+//
+// This costs one request/reply round trip to the broker, bounded by
+// jetStreamProbeTimeout, so it is only worth asking on a probe and only when
+// the connection is up. The error is deliberately discarded rather than
+// reported: it can quote the broker URL, and a probe response is public.
+func (b *Broker) JetStreamAvailable() bool {
+	_, err := b.js.AccountInfo(nats.MaxWait(jetStreamProbeTimeout))
+	return err == nil
 }
 
 // Close drains and closes the NATS connection.

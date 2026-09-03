@@ -14,10 +14,26 @@ import (
 type stubBroker struct {
 	connected bool
 	state     string
+	jetStream bool
+
+	// jetStreamCalls counts the round trips the probe would have made, so a
+	// test can assert the one it must not make.
+	jetStreamCalls *int
 }
 
 func (b stubBroker) IsConnected() bool { return b.connected }
 func (b stubBroker) ConnState() string { return b.state }
+func (b stubBroker) JetStreamAvailable() bool {
+	if b.jetStreamCalls != nil {
+		*b.jetStreamCalls++
+	}
+	return b.jetStream
+}
+
+// connectedBroker is the everything-is-fine dependency.
+func connectedBroker() stubBroker {
+	return stubBroker{connected: true, state: "CONNECTED", jetStream: true}
+}
 
 // The real broker must keep satisfying the interface the probes are written
 // against; the stub is only allowed to stand in for it while it does.
@@ -46,7 +62,7 @@ func get(t *testing.T, h http.HandlerFunc, path string) *httptest.ResponseRecord
 // The point of the split: a broker outage must not make the process look dead.
 func TestLivez_IgnoresBrokerOutage(t *testing.T) {
 	for _, dep := range []stubBroker{
-		{connected: true, state: "CONNECTED"},
+		connectedBroker(),
 		{connected: false, state: "RECONNECTING"},
 	} {
 		s := probeServer(dep)
@@ -62,7 +78,7 @@ func TestLivez_IgnoresBrokerOutage(t *testing.T) {
 }
 
 func TestReadyz_Connected(t *testing.T) {
-	s := probeServer(stubBroker{connected: true, state: "CONNECTED"})
+	s := probeServer(connectedBroker())
 
 	w := get(t, s.handleReadyz, "/readyz")
 
@@ -86,6 +102,58 @@ func TestReadyz_Connected(t *testing.T) {
 	}
 	if brokerCheck["status"] != checkOK || brokerCheck["state"] != "CONNECTED" {
 		t.Errorf("unexpected broker check: %v", brokerCheck)
+	}
+	jetStreamCheck, ok := checks["jetstream"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected jetstream check object, got %v", checks["jetstream"])
+	}
+	if jetStreamCheck["status"] != checkOK {
+		t.Errorf("unexpected jetstream check: %v", jetStreamCheck)
+	}
+}
+
+// A connected broker whose JetStream is gone — disabled, unprovisioned for the
+// account, or short of quorum — cannot take a registration or publish an event,
+// so the connection being up is not enough to answer ready.
+func TestReadyz_JetStreamUnavailable(t *testing.T) {
+	s := probeServer(stubBroker{connected: true, state: "CONNECTED", jetStream: false})
+
+	w := get(t, s.handleReadyz, "/readyz")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d (%s)", w.Code, w.Body.String())
+	}
+	body := decodeBody(t, w)
+	if body["reason"] != reasonJetStreamUnavailable {
+		t.Errorf("expected the jetstream reason, got %v", body["reason"])
+	}
+	checks := body["checks"].(map[string]any)
+	if got := checks["broker"].(map[string]any)["status"]; got != checkOK {
+		t.Errorf("the connection is up; broker check should still say %q, got %v", checkOK, got)
+	}
+	if got := checks["jetstream"].(map[string]any)["status"]; got != checkUnavailable {
+		t.Errorf("expected jetstream %q, got %v", checkUnavailable, got)
+	}
+}
+
+// With the connection down the JetStream round trip could only time out, so it
+// is skipped and reported as unknown rather than as a second failure.
+func TestReadyz_BrokerDownSkipsJetStreamProbe(t *testing.T) {
+	calls := 0
+	s := probeServer(stubBroker{connected: false, state: "RECONNECTING", jetStream: true, jetStreamCalls: &calls})
+
+	w := get(t, s.handleReadyz, "/readyz")
+
+	body := decodeBody(t, w)
+	if body["reason"] != reasonBrokerUnavailable {
+		t.Errorf("expected the broker reason to win, got %v", body["reason"])
+	}
+	checks := body["checks"].(map[string]any)
+	if got := checks["jetstream"].(map[string]any)["status"]; got != checkUnknown {
+		t.Errorf("expected jetstream %q when it was never asked, got %v", checkUnknown, got)
+	}
+	if calls != 0 {
+		t.Errorf("probed JetStream %d times over a dead connection, want 0", calls)
 	}
 }
 
@@ -120,10 +188,12 @@ func TestReadyz_BrokerDown(t *testing.T) {
 // is one of the package's own literals.
 func TestReadyz_ReasonIsAClosedSet(t *testing.T) {
 	allowed := map[string]bool{
-		statusUnready:           true,
-		reasonBrokerUnavailable: true,
-		checkUnavailable:        true,
-		"DISCONNECTED":          true,
+		statusUnready:              true,
+		reasonBrokerUnavailable:    true,
+		reasonJetStreamUnavailable: true,
+		checkUnavailable:           true,
+		checkUnknown:               true,
+		"DISCONNECTED":             true,
 	}
 
 	s := probeServer(stubBroker{connected: false, state: "DISCONNECTED"})
@@ -157,7 +227,7 @@ func TestHealth_UnchangedByProbeSplit(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		s := probeServer(stubBroker{connected: tc.connected, state: "CONNECTED"})
+		s := probeServer(stubBroker{connected: tc.connected, state: "CONNECTED", jetStream: tc.connected})
 		w := get(t, s.handleHealth, "/health")
 
 		if w.Code != http.StatusOK {
@@ -174,7 +244,7 @@ func TestHealth_UnchangedByProbeSplit(t *testing.T) {
 // through the full middleware stack with auth configured.
 func TestProbes_ExemptFromAdminAuth(t *testing.T) {
 	srv := New("0", NewStreamManager(nil, nil), nil, "s3cret")
-	srv.broker = stubBroker{connected: true, state: "CONNECTED"}
+	srv.broker = connectedBroker()
 
 	cases := []struct {
 		path string

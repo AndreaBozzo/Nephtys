@@ -4,10 +4,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"nephtys/internal/broker"
 )
 
 // startNATSOnPort starts an embedded NATS server on a chosen port, so an outage
@@ -30,6 +33,54 @@ func startNATSOnPort(t *testing.T, port int, storeDir string) *natsserver.Server
 	}
 	t.Cleanup(srv.Shutdown)
 	return srv
+}
+
+// A NATS server with JetStream switched off is the cheap, deterministic stand-in
+// for every way JetStream can be absent on a live connection — disabled, not
+// provisioned for the account, or short of quorum. The connection is up and core
+// NATS works; nothing Nephtys needs to persist or publish does.
+func TestReadyz_ConnectedWithoutJetStream(t *testing.T) {
+	nats, err := natsserver.NewServer(&natsserver.Options{
+		Host:      "127.0.0.1",
+		Port:      -1,
+		JetStream: false,
+	})
+	if err != nil {
+		t.Fatalf("nats server: %v", err)
+	}
+	nats.Start()
+	if !nats.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats not ready")
+	}
+	t.Cleanup(nats.Shutdown)
+
+	brk, err := broker.Connect(nats.ClientURL(), broker.DefaultConfig())
+	if err != nil {
+		t.Fatalf("broker connect: %v", err)
+	}
+	t.Cleanup(brk.Close)
+
+	if !brk.IsConnected() {
+		t.Fatal("expected the connection itself to be up")
+	}
+
+	s := &Server{manager: NewStreamManager(brk, nil), broker: brk}
+	w := httptest.NewRecorder()
+	s.handleReadyz(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 with JetStream absent, got %d (%s)", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, reasonJetStreamUnavailable) {
+		t.Errorf("expected the jetstream reason, got %s", body)
+	}
+
+	// /livez is unmoved: the process is fine, its dependency is not.
+	lw := httptest.NewRecorder()
+	s.handleLivez(lw, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if lw.Code != http.StatusOK {
+		t.Errorf("expected /livez to stay 200, got %d", lw.Code)
+	}
 }
 
 // readyzCode drives the handler and reports the status code it answered with.

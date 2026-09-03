@@ -11,6 +11,7 @@ import (
 type brokerHealth interface {
 	IsConnected() bool
 	ConnState() string
+	JetStreamAvailable() bool
 }
 
 // Probe response literals. Both endpoints answer from a closed set of strings:
@@ -25,8 +26,10 @@ const (
 
 	checkOK          = "ok"
 	checkUnavailable = "unavailable"
+	checkUnknown     = "unknown"
 
-	reasonBrokerUnavailable = "broker connection is not established"
+	reasonBrokerUnavailable    = "broker connection is not established"
+	reasonJetStreamUnavailable = "jetstream is not available on the broker connection"
 )
 
 // handleLivez reports that the process is running and its HTTP server is
@@ -39,28 +42,45 @@ func (s *Server) handleLivez(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReadyz reports whether the instance can accept and manage streams,
-// which means having a live broker connection: registration writes the config
-// to the JetStream KV bucket and every accepted event is published to
-// JetStream, so a disconnected instance can serve reads and nothing else.
+// which takes two things and not one: a live broker connection, and JetStream
+// answering on it. Registration writes the config to the JetStream KV bucket
+// and every accepted event is published to JetStream, so an instance that has
+// one without the other can serve reads and nothing else.
+//
+// The two are checked in order and the JetStream round trip is skipped when the
+// connection is down, where it could only time out. That check is then reported
+// as "unknown" rather than as a failure: the probe did not ask, and a readiness
+// body that claims a dependency failed when it was never consulted is how an
+// operator ends up debugging the wrong one.
 //
 // 200 means ready, 503 means not ready yet or not ready any more; a 503 is a
 // signal to stop routing to this instance, not to restart it. The connection
 // reconnects indefinitely, so readiness returns on its own once the broker is
 // back.
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	brokerOK, connState := s.brokerState()
+	brokerOK := s.broker.IsConnected()
+
+	jetStreamStatus := checkUnknown
+	jetStreamOK := false
+	if brokerOK {
+		jetStreamOK = s.broker.JetStreamAvailable()
+		jetStreamStatus = checkStatus(jetStreamOK)
+	}
 
 	checks := map[string]any{
 		"broker": map[string]any{
 			"status": checkStatus(brokerOK),
-			"state":  connState,
+			"state":  s.broker.ConnState(),
+		},
+		"jetstream": map[string]any{
+			"status": jetStreamStatus,
 		},
 	}
 
-	if !brokerOK {
+	if reason := unreadyReason(brokerOK, jetStreamOK); reason != "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"status": statusUnready,
-			"reason": reasonBrokerUnavailable,
+			"reason": reason,
 			"checks": checks,
 		})
 		return
@@ -72,10 +92,19 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// brokerState reports whether the broker dependency is usable and the client's
-// own name for its connection state.
-func (s *Server) brokerState() (bool, string) {
-	return s.broker.IsConnected(), s.broker.ConnState()
+// unreadyReason names the first dependency that is not ready, or "" when both
+// are. The order matters: a broker that is down explains a JetStream check that
+// never ran, and reporting the derived failure would send an operator after the
+// wrong dependency.
+func unreadyReason(brokerOK, jetStreamOK bool) string {
+	switch {
+	case !brokerOK:
+		return reasonBrokerUnavailable
+	case !jetStreamOK:
+		return reasonJetStreamUnavailable
+	default:
+		return ""
+	}
 }
 
 func checkStatus(ok bool) string {

@@ -11,17 +11,20 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ### Added
 - `GET /livez` and `GET /readyz`, separating "is this process alive" from "can it accept and manage streams". (#30)
 
-  `/livez` checks nothing and always answers `200`. `/readyz` answers `200` when the NATS connection is up and `503` when it is not, with a bounded diagnostic:
+  `/livez` checks nothing and always answers `200`. `/readyz` answers `200` when the broker connection is up *and* JetStream answers on it, `503` otherwise, with a bounded diagnostic:
 
   ```json
   {"status":"unready",
    "reason":"broker connection is not established",
-   "checks":{"broker":{"status":"unavailable","state":"RECONNECTING"}}}
+   "checks":{"broker":{"status":"unavailable","state":"RECONNECTING"},
+             "jetstream":{"status":"unknown"}}}
   ```
+
+  It is two checks because a connection being up does not mean JetStream is: a NATS server can serve core NATS with JetStream disabled, unprovisioned for the account, or short of quorum, and every write Nephtys makes goes through JetStream. The JetStream check is one bounded round trip and is only made while the connection is up — over a dead connection it could only time out — so it reports `unknown` rather than a second failure, and the reason names the dependency that actually failed.
 
   The split exists because `/health` can be neither probe: it answers `200` whether or not the broker is reachable, so nothing can be gated on it — and an operator who makes it a liveness probe by adding "restart when the body says `degraded`" gets a broker outage restarting every instance in the deployment for a fault none of them own. Liveness therefore checks no dependency at all, and readiness checks the one the instance cannot work without: registering a stream writes its config to the JetStream KV bucket and every accepted event is published to JetStream, so a disconnected instance can serve reads and nothing else.
 
-  Every string in a probe response comes from a closed set — the status words above plus the NATS client's own connection-state names (`CONNECTED`, `RECONNECTING`, `DISCONNECTED`, `CLOSED`, `DRAINING`). Neither endpoint formats the broker URL or a client error into its body, both of which routinely carry credentials, which is what keeps them safe to serve without auth. Like `/health` and `/metrics`, both are exempt from `NEPHTYS_ADMIN_TOKEN`: an orchestrator's probe carries no bearer token.
+  Every string in a probe response comes from a closed set — the statuses `ready`, `unready`, `alive`, `ok`, `unavailable`, `unknown`, the two reasons, and the NATS client's own connection-state names (`CONNECTED`, `CONNECTING`, `RECONNECTING`, `DISCONNECTED`, `CLOSED`, `DRAINING_SUBS`, `DRAINING_PUBS`, plus `unknown status` for a value the client itself does not recognize). Neither endpoint formats the broker URL or a client error into its body, both of which routinely carry credentials, which is what keeps them safe to serve without auth. Like `/health` and `/metrics`, both are exempt from `NEPHTYS_ADMIN_TOKEN`: an orchestrator's probe carries no bearer token.
 
   `/health` is unchanged, still `200` with `{"status":"ok"|"degraded"}`, and documented as superseded rather than deprecated-with-a-date. No removal is scheduled.
 - `nephtys --ready-check`, which probes this instance's own `/readyz` over localhost and exits `0` when ready, `1` when not. The runtime image is distroless — no shell, no `curl`, no `wget` — so a container healthcheck has only the binary to call; `compose.yml`'s Nephtys service now uses it.

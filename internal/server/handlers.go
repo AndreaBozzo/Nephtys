@@ -17,7 +17,7 @@ import (
 // working; new ones should use /livez for "is the process alive" and /readyz
 // for "can it accept streams". No removal is scheduled.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	connected, _ := s.brokerState()
+	connected := s.broker.IsConnected()
 
 	status := "ok"
 	if !connected {
