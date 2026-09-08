@@ -31,13 +31,15 @@ const replayEventCount = 6
 // publishSpacing separates published events so that no two of them share a
 // broker store timestamp. Time-based replay is inclusive of its start instant,
 // so events sharing a timestamp with the cut would both be delivered and the
-// assertion below would be asserting nothing. A millisecond is above the
-// coarsest clock granularity this test runs on.
+// assertion below would be asserting nothing. Five milliseconds clears the
+// coarsest clock granularity this test runs on with room to spare, and costs
+// 30ms across the whole file.
 const publishSpacing = 5 * time.Millisecond
 
-// setupReplayStream registers a stream through Register, publishes
-// replayEventCount events through its pipeline, and returns the manager's
-// JetStream context.
+// setupReplayStream registers a stream through Register and publishes
+// replayEventCount events through its pipeline. It returns the manager, so a
+// test can stop ingest, and a client connection that is not the one Nephtys
+// publishes on, so replaying looks to the broker like an unrelated consumer.
 func setupReplayStream(t *testing.T, id string) (*StreamManager, *nats.Conn) {
 	t.Helper()
 

@@ -73,7 +73,7 @@ concern and the CLI is the right place to inspect it.
 ## Where a replay can start
 
 A JetStream consumer's *deliver policy* is the only thing that decides where a
-replay begins. Both tools below set the same four policies:
+replay begins. Both tools below set it:
 
 | Start at | `nats sub` | `consumer.go` |
 |---|---|---|
@@ -257,7 +257,7 @@ go run docs/replay/consumer.go [flags]
 | `-from` | `all` | `all`, `new`, `last`, `last-per-subject`, a stream sequence, a duration ago (`2h`), or an RFC 3339 instant |
 | `-durable` | unset | Durable consumer name. Resumes from its acknowledgement floor; `-from` then applies only to the first run |
 | `-count` | `0` | Stop after this many events; `0` means no limit |
-| `-idle` | `5s` | Exit once no event arrives for this long — how a backfill knows it has reached the end. `0` follows forever |
+| `-idle` | `5s` | Exit once no event arrives for this long — how a backfill knows it has reached the end. `0` follows the stream indefinitely, and is what `-durable` wants for a long-running loader |
 
 Each event prints as one tab-separated line: stream sequence, store timestamp,
 subject, then the envelope.

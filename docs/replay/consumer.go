@@ -42,6 +42,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nats-io/nats.go"
 )
@@ -164,7 +165,12 @@ func run(server, stream, subject, from, durable string, count int, idle time.Dur
 				fmt.Fprintln(os.Stderr, "interrupted")
 				break
 			}
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) {
+			if quiet(err) {
+				if idle <= 0 {
+					// Following the stream: a round trip that brought nothing
+					// back is a quiet interval, not the end of anything.
+					continue
+				}
 				fmt.Fprintf(os.Stderr, "no event for %s — stopping\n", idle)
 				break
 			}
@@ -187,6 +193,19 @@ func run(server, stream, subject, from, durable string, count int, idle time.Dur
 
 	fmt.Fprintf(os.Stderr, "%d event(s) replayed\n", seen)
 	return nil
+}
+
+// quiet reports whether an error means "nothing arrived in this round trip"
+// rather than a failure.
+//
+// It is not only the idle deadline that produces one. The client bounds every
+// Fetch with its own default wait — five seconds — even when the context it is
+// handed carries no deadline of its own, so a consumer that follows a stream
+// sees one of these on every quiet interval and has to keep going. Reading it
+// as the end of the stream is what made `-idle 0` stop after five seconds
+// instead of following.
+func quiet(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout)
 }
 
 // fetch asks for up to want events, bounded by idle when idle is non-zero.
@@ -272,10 +291,16 @@ func printMessage(msg *nats.Msg) {
 
 func preview(b []byte) string {
 	s := strings.TrimSpace(string(b))
-	if len(s) > payloadPreview {
-		return s[:payloadPreview] + "…"
+	if len(s) <= payloadPreview {
+		return s
 	}
-	return s
+	// Back up to a rune boundary. A payload is arbitrary UTF-8, and cutting one
+	// in half puts a replacement character in the output.
+	cut := payloadPreview
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 func envOr(key, fallback string) string {
