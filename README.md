@@ -33,6 +33,7 @@ Nephtys ingests live data streams (WebSocket, webhooks, Server-Sent Events, gRPC
 - [Stream Lifecycle](#stream-lifecycle)
 - [Pipeline Middlewares](#pipeline-middlewares)
 - [Persistence](#persistence)
+- [Replay and Recovery](#replay-and-recovery)
 - [Development](#development)
 - [Contributing](#contributing)
 - [Citation](#citation)
@@ -552,10 +553,41 @@ The same handshake runs on shutdown and on stream removal, so a buffered batch i
 
 Nephtys uses NATS JetStream for both event durability and configuration state — no separate database is required.
 
-- **Event payloads** are written to JetStream with a 72h default retention (configurable on the broker).
+- **Event payloads** are written to JetStream with a 72h retention window, which
+  is the ceiling on how far back anything can be replayed — see [Replay and
+  Recovery](#replay-and-recovery). Nephtys re-applies the stream's limits on
+  every start, so a `nats stream edit --max-age` holds only until the next
+  restart; a longer window currently needs re-applying after each start.
 - **Stream configurations** are stored in a JetStream KV bucket and reloaded on startup, so registered streams survive restarts. The stored config is the *effective* one: `POST /v1/streams` writes it, and every accepted `PUT /v1/streams/{id}/pipeline` amends it, so what restarts is what was last running. A persisted config the current validator rejects is skipped with a warning rather than started.
 - **A management call that cannot be persisted does not take effect.** `POST /v1/streams`, `PUT /v1/streams/{id}/pipeline` and `DELETE /v1/streams/{id}` all answer `503` rather than applying a change the store did not accept. For `DELETE` that means the stream is left *running*: tearing it down while its config survives would bring it back at the next restart, which is the same divergence in the other direction.
 - **`503` means the change was not applied locally, not that the store is untouched.** A JetStream request that times out has an unknown outcome — it may still be applied after the client has given up, in which case the next restart acts on it. Nephtys does not currently reconcile that; it is tracked in [#65](https://github.com/AndreaBozzo/Nephtys/issues/65). Treat a `503` as "retry, then verify with `GET /v1/streams`".
+
+## Replay and Recovery
+
+Everything Nephtys publishes stays in JetStream for the retention window (72h by
+default), so replaying an outage, backfilling a new consumer, or re-reading
+yesterday afternoon needs nothing from the Nephtys API — it is a consumer-side
+decision about where to start reading. There is deliberately no replay endpoint:
+it could only be a worse wrapper around what the broker already does.
+
+```bash
+# Look: everything still retained on one subject tree, then exit.
+nats sub "nephtys.stream.sensors.>" --stream NEPHTYS --all --terminate-at-end
+
+# Load: a durable consumer that resumes at its acknowledgement floor after an outage.
+nats consumer add NEPHTYS warehouse-loader   --pull --deliver=all --filter "nephtys.stream.sensors.>"   --ack explicit --replay instant --max-deliver=-1 --defaults
+nats consumer next NEPHTYS warehouse-loader --count 10 --ack
+
+# Backfill from an absolute instant, with the example consumer.
+go run docs/replay/consumer.go -subject "nephtys.stream.sensors.>" -from 2026-09-08T06:00:00Z
+```
+
+[`docs/REPLAY.md`](docs/REPLAY.md) is the reference: every start position, the
+outage-recovery and backfill recipes, why both use pull consumers rather than
+push ones, and what replay cannot give you back — an event a pipeline dropped was
+never published and does not exist to replay.
+[`docs/replay/consumer.go`](docs/replay/consumer.go) is a complete replay
+consumer in one file, meant to be read and copied.
 
 ## Development
 
