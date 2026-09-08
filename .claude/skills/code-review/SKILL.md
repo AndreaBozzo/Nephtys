@@ -180,18 +180,31 @@ the next reader does not have to re-learn it.
 | #73 | `set -e` made a failed read in a poll loop exit silently; `sleep 0.1` is not POSIX | correct, fixed |
 | #76 (CodeRabbit) | The example consumer printed the `-server` URL in a connection error, leaking a password in its userinfo | correct, fixed — and its suggested fix was incomplete: the URL leaks again through the *wrapped* parse error, which dropping the URL from the message does not close |
 | #76 (CodeRabbit) | Refuse credential-bearing non-TLS broker URLs | premise correct, prescription declined — it would break an authenticated broker on loopback, and Nephtys itself sets no TLS policy; the caveat is documented instead |
+| #77 | The conformance harness closed each source twice, requiring an idempotent `Close` the `StreamSource` contract does not promise | correct, fixed as suggested (close-once in the harness) |
+| #77 | Same double-`Close` in the soak run | correct, fixed |
+| #77 | `OpenPerformsNoRemoteIO` abandoned a goroutine inside `Open` on its timeout path | correct, fixed as suggested (deadline into `Open`, drain before failing) |
+| #77 | The backpressure clause asserted only that nothing was dropped, not that anything backpressured | correct finding, wrong prescription — its "assert max one publish in flight" is false for the webhook and gRPC sources, measured at 4 concurrent publishes for 4 concurrent POSTs |
 
-Ten findings over three PRs: all pointed at something real, three carried
-inaccurate specifics, none was a pure false positive. Reliable on environment
-semantics, shell portability, credential handling, and gaps between what a
-comment claims and what the code does. Weak on the exact contents of an external
-library's API — verify those every time.
+Fourteen findings over four PRs, none a pure false positive. Reliable on
+environment semantics, shell portability, credential handling, and gaps between
+what a comment claims and what the code does — that last category is where these
+reviews are strongest, and #77 is the clearest case: three of its four findings
+were about the test suite promising more than it delivered. Weak on the exact
+contents of an external library's API, and on whether a property holds for
+*every* implementation in a table — verify both every time.
 
 The pattern to plan for is not the false positive, which has not happened yet.
-It is the true finding with a fix that is wrong or incomplete: five of the ten
-so far. Verifying the *claim* is not enough on its own — reproduce the failure,
-apply your own fix, then reproduce again to see whether it actually closed. On
-#76 the suggested one-line fix left the same secret reachable by another path.
+It is the true finding with a fix that is wrong or incomplete: four of the rows
+above. Verifying the *claim* is not enough on its own.
+
+- Reproduce the failure, apply the fix, then reproduce again to see whether it
+  actually closed. On #76 the suggested one-line fix left the same password
+  reachable through the wrapped parse error.
+- When a finding proposes an assertion for a whole table of implementations,
+  measure it against the ones you expect to fail it. On #77 "assert max one
+  publish in flight" reads obviously right and is false for two of five
+  connectors; a probe took two minutes and turned a wrong assertion into a
+  correct one plus a documented exception.
 
 ## Not adopted
 
