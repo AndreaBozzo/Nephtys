@@ -600,6 +600,7 @@ make vet             # Run go vet
 make check-examples  # Validate every docs/examples/*.json with --config-check
 make all             # Run fmt + vet + test (the standard pre-commit cycle)
 make smoke           # End-to-end check against a running instance (see below)
+make soak            # Optional connector conformance soak (300 sessions per connector)
 ```
 
 ### Smoke test

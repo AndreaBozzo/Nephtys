@@ -11,7 +11,7 @@ CMD := ./cmd/nephtys
 #   make docker-build VERSION=v0.3.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: help build run test bench coverage fmt vet lint clean check-examples smoke docker-check nats-up docker-up docker-up-full docker-down docker-build all
+.PHONY: help build run test soak bench coverage fmt vet lint clean check-examples smoke docker-check nats-up docker-up docker-up-full docker-down docker-build all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -27,6 +27,11 @@ run: ## Run the application, exporting .env first if it exists
 
 test: ## Run all tests
 	go test -race -cover ./...
+
+# -count=1 is required, not decorative: go caches a passing test result, so a
+# second `make soak` would report success without running a single session.
+soak: ## Run the connector conformance soak (300 sessions per connector; override NEPHTYS_SOAK_SESSIONS)
+	NEPHTYS_SOAK=1 go test -count=1 -run TestConformanceSoak -v -timeout 15m ./internal/connector/
 
 bench: ## Run benchmarks (pipeline publish path and broker)
 	go test -run XXX -bench . -benchmem ./internal/pipeline/ ./internal/broker/

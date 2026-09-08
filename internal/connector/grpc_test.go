@@ -170,3 +170,16 @@ func TestGrpcSource_StreamEvents(t *testing.T) {
 		t.Fatal("Run did not return after cancellation")
 	}
 }
+
+// TestGrpcSource_CloseIsIdempotent covers the claim in Close's own doc comment,
+// for the same reason as the webhook source: the shared conformance suite holds
+// connectors to the StreamSource contract, which promises exactly one Close per
+// successful Open, and this source promises more than that.
+func TestGrpcSource_CloseIsIdempotent(t *testing.T) {
+	src := NewGrpcSource("close-twice", "topic", &domain.GrpcConfig{Port: "0"})
+	if err := src.Open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	src.Close()
+	src.Close()
+}

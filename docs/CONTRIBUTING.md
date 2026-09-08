@@ -42,6 +42,7 @@ make all             # fmt + vet + test — run this before every commit
 make test            # go test -race ./...
 make check-examples  # every docs/examples/*.json must pass --config-check
 make lint            # golangci-lint, as CI runs it
+make soak            # optional: the connector conformance soak, 300 sessions per connector
 ```
 
 CI runs `gofmt -l`, `go vet`, `golangci-lint`, `make check-examples`, and the
@@ -69,6 +70,13 @@ suddenly reports every file as unformatted, that is what happened.
   `docs/examples/` gets a runnable example that passes `make check-examples`.
 - **Tests that can fail.** A regression test that passes against the unfixed
   code guards nothing — write the test, watch it fail, then fix.
+- **A new connector passes the shared conformance suite.** Implementing
+  `StreamSource` means adding a row to `connectorCases` in
+  `internal/connector/conformance_test.go` and a fixture beside the others in
+  `conformance_fixtures_test.go`. There is no way to opt a connector out of a
+  clause — where one genuinely differs, say which structural exception applies
+  and why, rather than weakening the assertion for everyone. See
+  [`LIFECYCLE.md` §9](LIFECYCLE.md#9-the-conformance-suite).
 - **`CHANGELOG.md`**, in Keep a Changelog format, for anything user-visible.
   Say what changed and why it changed; the changelog is where the reasoning
   lives.
