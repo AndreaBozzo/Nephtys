@@ -28,8 +28,10 @@ run: ## Run the application, exporting .env first if it exists
 test: ## Run all tests
 	go test -race -cover ./...
 
-soak: ## Run the connector conformance soak (30s per connector; override NEPHTYS_SOAK_DURATION)
-	NEPHTYS_SOAK=1 go test -run TestConformanceSoak -v -timeout 30m ./internal/connector/
+# -count=1 is required, not decorative: go caches a passing test result, so a
+# second `make soak` would report success without running a single session.
+soak: ## Run the connector conformance soak (300 sessions per connector; override NEPHTYS_SOAK_SESSIONS)
+	NEPHTYS_SOAK=1 go test -count=1 -run TestConformanceSoak -v -timeout 15m ./internal/connector/
 
 bench: ## Run benchmarks (pipeline publish path and broker)
 	go test -run XXX -bench . -benchmem ./internal/pipeline/ ./internal/broker/

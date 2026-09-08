@@ -449,11 +449,22 @@ validated when the envelope is marshalled — so a client sending non-JSON made
 broker, and took its own stream down with it. It is fixed to wrap like the
 others.
 
-**The soak run is optional.** `make soak` drives sessions back to back for 30
-seconds per connector — roughly a thousand of them — and ends on the same
+**The soak run is optional.** `make soak` drives 300 sessions per connector back
+to back — about three seconds for the whole suite — and ends on the same
 goroutine accounting. It is the accumulation case the single-session tests
 cannot see, and it is skipped unless `NEPHTYS_SOAK` is set, so CI stays
 deterministic and bounded.
+
+It is bounded by session count rather than by wall time, and that is worth
+recording because the first version was not. Every session opens and closes a
+TCP connection to its fixture, and a closed socket holds its port in TIME_WAIT
+for minutes; a run bounded by 30 seconds therefore goes as fast as the host
+allows and exhausts the ephemeral port range instead of finding anything. It
+did exactly that on Windows — `WSAEADDRINUSE` after some nine thousand WebSocket
+sessions, then a first-session failure for every connector that followed against
+a port table that had not recovered. A leak that happens once per session shows
+up within tens of them, so 300 is far above the signal and far below the
+ceiling; 5,000 on a single connector were measured clean.
 
 ## 10. How it is verified
 

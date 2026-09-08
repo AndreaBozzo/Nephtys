@@ -42,7 +42,7 @@ make all             # fmt + vet + test — run this before every commit
 make test            # go test -race ./...
 make check-examples  # every docs/examples/*.json must pass --config-check
 make lint            # golangci-lint, as CI runs it
-make soak            # optional: the connector conformance soak, 30s per connector
+make soak            # optional: the connector conformance soak, 300 sessions per connector
 ```
 
 CI runs `gofmt -l`, `go vet`, `golangci-lint`, `make check-examples`, and the
