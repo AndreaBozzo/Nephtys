@@ -36,6 +36,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -101,9 +102,17 @@ func run(server, stream, subject, from, durable string, count int, idle time.Dur
 		return err
 	}
 
+	// Validated here rather than left to the client, so that a malformed URL is
+	// reported by this program — the client's parse error quotes the URL it was
+	// handed, credentials included.
+	broker, err := redactURL(server)
+	if err != nil {
+		return fmt.Errorf("-server: %w", err)
+	}
+
 	nc, err := nats.Connect(server)
 	if err != nil {
-		return fmt.Errorf("connect %s: %w", server, err)
+		return fmt.Errorf("connect %s: %w", broker, err)
 	}
 	defer nc.Close()
 
@@ -301,6 +310,37 @@ func preview(b []byte) string {
 		cut--
 	}
 	return s[:cut] + "…"
+}
+
+// redactURL renders a broker URL for an error message without its credentials.
+//
+// A NATS URL routinely carries a password in its userinfo, and printing the URL
+// verbatim puts it in stderr and in whatever collects stderr. The host is kept,
+// because "which broker did this fail to reach" is the whole diagnostic value
+// of naming it. This mirrors the rule Nephtys applies to endpoints it reports
+// through the API — see internal/connector/redact.go — restated here so this
+// file stays standalone.
+//
+// It is also why the URL is parsed before the client is handed it: url.Parse
+// and the NATS client both quote the URL they were given when they cannot parse
+// it, so a malformed URL carrying a password leaks it through *their* error, not
+// through this one. Neither the URL nor the underlying parse error is echoed
+// here for that reason.
+func redactURL(raw string) (string, error) {
+	// The client prepends its own scheme when the URL has none, so a bare
+	// host:port is valid; parse it the way the client will.
+	if !strings.Contains(raw, "://") {
+		raw = "nats://" + raw
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "", errors.New("not a valid broker URL (it is not repeated here: it may carry credentials)")
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func envOr(key, fallback string) string {

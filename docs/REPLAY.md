@@ -26,6 +26,12 @@ The `nats` CLI is used throughout: `go install github.com/nats-io/natscli/nats@l
 or see [natscli releases](https://github.com/nats-io/natscli/releases). Set
 `NATS_URL` (or pass `-s`) so the examples below reach your broker.
 
+One note on that URL, since replaying is usually done from an operator's laptop
+rather than from inside the deployment: credentials in a `nats://` URL cross the
+network in the clear, exactly as they do for Nephtys itself. Use `tls://` for a
+remote broker, and treat a shell history holding a `nats://user:pass@...` URL as
+a disclosed password.
+
 ## What is retained
 
 Nephtys creates one JetStream stream at startup and publishes every accepted
