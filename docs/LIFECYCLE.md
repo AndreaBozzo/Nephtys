@@ -406,10 +406,22 @@ var connectorCases = []connectorCase{
 ```
 
 **Adding a connector means adding a row.** There is no way to opt out of a
-clause, only to declare which of the two structural exceptions applies —
-`sessionIsTheUpstreamConnection` splits the connectors whose session *is* one
-upstream connection from the ones that serve whoever arrives. Everything else
-holds for all five.
+clause, only to declare which structural exceptions apply. There are two, and
+both separate the pull connectors from the push ones rather than excusing a
+connector from anything:
+
+- `sessionIsTheUpstreamConnection` — the session *is* one upstream connection,
+  so losing it ends the session. A push connector serves whoever arrives, and a
+  poller's session outlives any single poll.
+- `publishesSequentially` — the connector publishes from a single read loop, so
+  at most one publish is in flight and a slow pipeline backpressures the
+  upstream through TCP. A webhook serves each request in its own goroutine and
+  a gRPC source each client stream in its own, so concurrent clients produce
+  concurrent publishes — four in flight for four concurrent POSTs, measured.
+  Their backpressure reaches the client instead: the response is not written
+  until the publish returns.
+
+Everything else holds for all five.
 
 | Clause | What it asserts |
 | --- | --- |
@@ -420,9 +432,10 @@ holds for all five.
 | `EventsCarryTheirSourceIdentity` | source, type, timestamp and a body on every event |
 | `MalformedFrameStillProducesAPublishableEvent` | the broker's encoding rule holds for whatever the upstream sends |
 | `PublishFailureDoesNotEndTheSession` | a broker outage does not spend a restart attempt |
-| `SlowPublishBackpressuresRatherThanDrops` | a slow pipeline costs throughput, never events |
+| `SlowPublishDoesNotDropEvents` | a slow pipeline costs throughput, never events |
+| `PullConnectorPublishesOneEventAtATime` | a pull connector reads one frame at a time, so backpressure reaches the upstream |
 | `CloseReleasesWhatOpenAcquired` | `Open` → `Close` → `Open` on the same address succeeds |
-| `CloseIsSafeWithoutRun` | the admission path that fails between `Open` and `Run` |
+| `CloseIsSafeWithoutRun` | the admission path that fails between `Open` and `Run` — one `Close`, because that is what the contract promises |
 | `NoConnectorGoroutineSurvivesTheSession` | no goroutine of this package outlives a cancelled session |
 | `UpstreamLossEndsAPullSession` | the session ends, with a reason, and the source does not reconnect on its own |
 | `UpstreamLossDoesNotEndAPushSession` | a client going away is not a session failure |
@@ -433,6 +446,15 @@ well-formed event, deliver one malformed frame, go away mid-session. A
 disconnect is a closed WebSocket for one connector and a handler returning for
 another; the suite asserts the same thing about both because the fixture, not
 the test, knows the difference.
+
+The harness closes each source exactly once, however many of its own
+assertions ask it to. Several have to close before they can assert — a goroutine
+count means nothing until the source has released what it holds — and the
+cleanup closes too. Left to chance that is two calls on a connector the contract
+promises one, and a shared suite must not quietly demand more of an
+implementation than the interface it is testing. The two push connectors do
+document their `Close` as repeatable, and each is tested for it beside its own
+implementation rather than here.
 
 Goroutine accounting counts goroutines whose stack runs through
 `internal/connector` — the ones a connector starts and therefore owns — against
@@ -495,6 +517,7 @@ it covers.
 | `TestConformance_UpstreamLossEndsAPullSession` | `close(sessionOver)` in the WebSocket session — reintroducing the leak fails it on the goroutine count | the session-count half, which a retry that still returns would fail instead |
 | `TestConformance_CancellationEndsTheSessionWithNil` | returning `ctx.Err()` from a cancelled session | which connector, unless read from the subtest name |
 | `TestConformance_NoConnectorGoroutineSurvivesTheSession` | a goroutine left parked after cancellation | a leak on the *failure* path — the upstream-loss test is the one that catches those |
+| `TestConformance_PullConnectorPublishesOneEventAtATime` | a pull connector publishing concurrently — wrapping the WebSocket publish in a goroutine fails it at 3 in flight | the push connectors, which publish concurrently by design and are excluded |
 
 Timing is not taken from the wall clock: the supervisor's `now` and `sleep` are
 injected, and the tests replace them, so the reset window and the ladder are

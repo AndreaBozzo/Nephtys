@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -52,6 +53,13 @@ type connectorCase struct {
 	// whatever clients arrive and a poller's session outlives any single poll,
 	// so for those three the session survives instead.
 	sessionIsTheUpstreamConnection bool
+
+	// publishesSequentially marks the connectors that publish from a single
+	// read loop, so at most one publish is ever in flight and a slow pipeline
+	// backpressures the upstream. The push connectors serve each client in its
+	// own goroutine and publish concurrently by design, which is a difference
+	// in what they are, not a weaker guarantee.
+	publishesSequentially bool
 }
 
 var connectorCases = []connectorCase{
@@ -60,17 +68,20 @@ var connectorCases = []connectorCase{
 		build:                          websocketFixture,
 		detached:                       websocketDetached,
 		sessionIsTheUpstreamConnection: true,
+		publishesSequentially:          true,
 	},
 	{
 		name:                           "sse",
 		build:                          sseFixture,
 		detached:                       sseDetached,
 		sessionIsTheUpstreamConnection: true,
+		publishesSequentially:          true,
 	},
 	{
-		name:     "rest_poller",
-		build:    restPollerFixture,
-		detached: restPollerDetached,
+		name:                  "rest_poller",
+		build:                 restPollerFixture,
+		detached:              restPollerDetached,
+		publishesSequentially: true,
 	},
 	{
 		name:     "webhook",
@@ -103,6 +114,21 @@ type session struct {
 	events chan domain.StreamEvent
 
 	readyCalls atomic.Int64
+	closeOnce  sync.Once
+}
+
+// close releases the source, exactly once however many callers ask.
+//
+// Several tests have to close before they assert — a goroutine count is only
+// meaningful once the source has released what it holds — and the harness also
+// closes on cleanup. Left to chance that is two calls, and the contract in
+// source.go promises a connector exactly one per Open that returned nil. A
+// suite that quietly required more would fail a future connector that is
+// correct by the contract it was written against, so the harness guarantees
+// the contract instead of leaning on today's implementations tolerating a
+// second call.
+func (s *session) close() {
+	s.closeOnce.Do(s.source.Close)
 }
 
 // publishRule decides what a session's publish call does with an event.
@@ -152,7 +178,7 @@ func start(t *testing.T, src StreamSource, rule publishRule) *session {
 		case <-time.After(waitCeiling):
 			t.Error("Run did not return after cancellation")
 		}
-		src.Close()
+		s.close()
 	})
 
 	select {
@@ -215,18 +241,39 @@ func TestConformance_OpenPerformsNoRemoteIO(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			src := c.detached(t)
 
-			opened := make(chan error, 1)
-			go func() { opened <- src.Open(context.Background()) }()
+			// The deadline goes into Open rather than only around it. Open
+			// takes a context precisely so a caller can bound it — the manager
+			// bounds admission at 5s for the same reason — so a source that
+			// reaches a remote host has something to return, and this test does
+			// not have to abandon a goroutine inside it to find out.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
 
+			opened := make(chan error, 1)
+			go func() { opened <- src.Open(ctx) }()
+
+			// Close follows an Open that returned nil, and only that: the
+			// contract pairs them, and a source whose Open failed has acquired
+			// nothing to release.
 			select {
 			case err := <-opened:
 				if err != nil {
 					t.Fatalf("Open with no upstream in existence returned %v, want nil", err)
 				}
-			case <-time.After(time.Second):
+				src.Close()
+			case <-ctx.Done():
+				// Still failing, but drain first: a goroutine parked inside a
+				// connector that ignores its context would otherwise outlive
+				// this subtest and land in the baseline of the next one.
+				select {
+				case err := <-opened:
+					if err == nil {
+						src.Close()
+					}
+				case <-time.After(waitCeiling):
+				}
 				t.Fatal("Open did not return within a second — it is reaching a remote host")
 			}
-			src.Close()
 		})
 	}
 }
@@ -406,12 +453,16 @@ func TestConformance_PublishFailureDoesNotEndTheSession(t *testing.T) {
 	}
 }
 
-// TestConformance_SlowPublishBackpressuresRatherThanDrops states the choice
-// every connector makes when the pipeline is slower than the upstream: publish
-// is called synchronously and the session waits, so a slow consumer costs
-// throughput rather than events. The alternative — a buffer that overflows —
-// loses data silently, which is the failure nobody notices.
-func TestConformance_SlowPublishBackpressuresRatherThanDrops(t *testing.T) {
+// TestConformance_SlowPublishDoesNotDropEvents is the half of backpressure
+// that holds for every connector: when the pipeline is slower than the
+// upstream, the events still arrive. None of them buffers into something that
+// can overflow, and a buffer that overflows loses data silently, which is the
+// failure nobody notices.
+//
+// It deliberately does not assert *how* that is achieved. Serialised publishing
+// is a property of the pull connectors only — see the test below — and
+// asserting it here would bake in something two of the five do not do.
+func TestConformance_SlowPublishDoesNotDropEvents(t *testing.T) {
 	const events = 3
 
 	for _, c := range connectorCases {
@@ -446,6 +497,60 @@ func TestConformance_SlowPublishBackpressuresRatherThanDrops(t *testing.T) {
 	}
 }
 
+// TestConformance_PullConnectorPublishesOneEventAtATime is the other half, and
+// it holds only for the connectors that read a stream: they publish from a
+// single read loop, so a slow publish stops them reading and the backpressure
+// reaches the upstream through TCP. That is what makes a slow pipeline cost
+// throughput rather than memory.
+//
+// It is deliberately not asserted for the push connectors. A webhook serves
+// each request in its own goroutine and a gRPC source each client stream in
+// its own, so concurrent clients produce concurrent publishes — measured at
+// four in flight for four concurrent POSTs. Requiring one would be asserting
+// something they do not do, and would pass here only because the fixtures emit
+// sequentially. Their backpressure reaches the client a different way: the
+// response is not written until the publish returns.
+func TestConformance_PullConnectorPublishesOneEventAtATime(t *testing.T) {
+	const events = 3
+
+	for _, c := range connectorCases {
+		if !c.publishesSequentially {
+			continue
+		}
+		t.Run(c.name, func(t *testing.T) {
+			fix := c.build(t)
+
+			var inFlight, peak atomic.Int64
+			s := start(t, fix.source, func(domain.StreamEvent) error {
+				n := inFlight.Add(1)
+				for {
+					seen := peak.Load()
+					if n <= seen || peak.CompareAndSwap(seen, n) {
+						break
+					}
+				}
+				// Long enough that a connector publishing concurrently would
+				// have a second call inside this one, short enough not to
+				// dominate the run.
+				time.Sleep(20 * time.Millisecond)
+				inFlight.Add(-1)
+				return nil
+			})
+
+			for i := 0; i < events; i++ {
+				fix.emit(t)
+			}
+			for i := 0; i < events; i++ {
+				s.nextEvent(t)
+			}
+
+			if got := peak.Load(); got != 1 {
+				t.Fatalf("%d publish calls were in flight at once, want 1 — the read loop is not waiting for the pipeline", got)
+			}
+		})
+	}
+}
+
 // TestConformance_CloseReleasesWhatOpenAcquired is the assertion a restart
 // depends on: the supervisor closes a source and opens it again on the same
 // address, and a listener that outlived its Close makes the second Open fail
@@ -471,6 +576,13 @@ func TestConformance_CloseReleasesWhatOpenAcquired(t *testing.T) {
 // TestConformance_CloseIsSafeWithoutRun covers the admission path that fails
 // between Open and Run — a config store that rejects the write, a cancelled
 // registration — where Close runs against a source whose Run was never called.
+// That case the contract does require every connector to tolerate.
+//
+// It closes once, not twice. Idempotent Close is not in the contract: source.go
+// promises exactly one Close per Open that returned nil, and a shared suite
+// that demanded more would fail a connector that is correct as written. The two
+// push connectors do document their Close as repeatable, and each is tested for
+// it beside its own implementation.
 func TestConformance_CloseIsSafeWithoutRun(t *testing.T) {
 	for _, c := range connectorCases {
 		t.Run(c.name, func(t *testing.T) {
@@ -479,9 +591,6 @@ func TestConformance_CloseIsSafeWithoutRun(t *testing.T) {
 			if err := fix.source.Open(context.Background()); err != nil {
 				t.Fatalf("Open: %v", err)
 			}
-			fix.source.Close()
-			// Twice: the push connectors document Close as safe to repeat, and
-			// for the others it is a no-op either way.
 			fix.source.Close()
 		})
 	}
@@ -510,7 +619,7 @@ func TestConformance_NoConnectorGoroutineSurvivesTheSession(t *testing.T) {
 			case <-time.After(waitCeiling):
 				t.Fatal("Run did not return after cancellation")
 			}
-			fix.source.Close()
+			s.close()
 
 			assertGoroutinesSettle(t, baseline)
 		})
@@ -549,7 +658,7 @@ func TestConformance_UpstreamLossEndsAPullSession(t *testing.T) {
 			// path a supervised stream spends most of its restarts on, so it is
 			// the one that has to be clean: a watcher left parked here leaks
 			// once per reconnect, for as long as the upstream keeps flapping.
-			fix.source.Close()
+			s.close()
 			assertGoroutinesSettle(t, baseline)
 		})
 	}

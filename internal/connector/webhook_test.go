@@ -394,3 +394,17 @@ func TestWebhookSource_RunWithoutOpen(t *testing.T) {
 		t.Fatal("Run without Open returned nil")
 	}
 }
+
+// TestWebhookSource_CloseIsIdempotent covers the claim in Close's own doc
+// comment. The shared conformance suite deliberately does not: the StreamSource
+// contract promises exactly one Close per successful Open, so requiring more of
+// every connector would fail one that is correct as written. This source
+// promises more than the contract, so it is tested for it here.
+func TestWebhookSource_CloseIsIdempotent(t *testing.T) {
+	src := NewWebhookSource("close-twice", "topic", &domain.WebhookConfig{Port: "0", Path: "/hook"})
+	if err := src.Open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	src.Close()
+	src.Close()
+}

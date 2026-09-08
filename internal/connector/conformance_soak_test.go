@@ -102,7 +102,7 @@ func TestConformanceSoak(t *testing.T) {
 					case <-time.After(waitCeiling):
 						t.Fatal("Run did not return after cancellation")
 					}
-					fix.source.Close()
+					s.close()
 				})
 				if !ok {
 					t.Fatalf("session %d failed after %d clean one(s)", completed, completed-1)
