@@ -11,7 +11,7 @@ CMD := ./cmd/nephtys
 #   make docker-build VERSION=v0.3.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: help build run test bench coverage fmt vet lint clean check-examples smoke docker-check nats-up docker-up docker-up-full docker-down docker-build all
+.PHONY: help build run test soak bench coverage fmt vet lint clean check-examples smoke docker-check nats-up docker-up docker-up-full docker-down docker-build all
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -27,6 +27,9 @@ run: ## Run the application, exporting .env first if it exists
 
 test: ## Run all tests
 	go test -race -cover ./...
+
+soak: ## Run the connector conformance soak (30s per connector; override NEPHTYS_SOAK_DURATION)
+	NEPHTYS_SOAK=1 go test -run TestConformanceSoak -v -timeout 30m ./internal/connector/
 
 bench: ## Run benchmarks (pipeline publish path and broker)
 	go test -run XXX -bench . -benchmem ./internal/pipeline/ ./internal/broker/

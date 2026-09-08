@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -156,11 +157,23 @@ func (g *GrpcSource) StreamEvents(stream pb.Streamer_StreamEventsServer) error {
 			return err
 		}
 
+		// A payload that is not valid JSON is wrapped as a JSON string, the way
+		// every other connector wraps one. The envelope is marshalled on the
+		// publish path, and json.RawMessage is validated when it is: passing
+		// the bytes through unchecked made a client sending non-JSON fail every
+		// publish with a marshalling error raised a long way from here, and
+		// take its own stream down with it.
+		payload := json.RawMessage(req.Payload)
+		if !json.Valid(req.Payload) {
+			escaped, _ := json.Marshal(string(req.Payload))
+			payload = json.RawMessage(escaped)
+		}
+
 		event := domain.StreamEvent{
 			Source:    g.id,
 			Type:      req.Type,
 			Timestamp: time.Now().UnixMilli(),
-			Payload:   req.Payload,
+			Payload:   payload,
 		}
 
 		if err := g.publish(g.topic, event); err != nil {

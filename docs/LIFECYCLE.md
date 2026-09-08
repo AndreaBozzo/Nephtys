@@ -390,7 +390,72 @@ No JSON field was renamed or removed.
 | Metrics | `nephtys_stream_restarts_total{stream_id}` | `nephtys_stream_state` and its four label values |
 | `--config-check` | validates `restart` | every existing rule |
 
-## 9. How it is verified
+## 9. The conformance suite
+
+The contract in section 3 is one sentence per method, and until every connector
+was checked against the same sentences it was five separate understandings of
+it. `internal/connector/conformance_test.go` is the shared suite: one test per
+clause, each run against every implementation from a single table.
+
+```go
+var connectorCases = []connectorCase{
+	{name: "websocket", build: websocketFixture, detached: websocketDetached,
+		sessionIsTheUpstreamConnection: true},
+	// ...
+}
+```
+
+**Adding a connector means adding a row.** There is no way to opt out of a
+clause, only to declare which of the two structural exceptions applies —
+`sessionIsTheUpstreamConnection` splits the connectors whose session *is* one
+upstream connection from the ones that serve whoever arrives. Everything else
+holds for all five.
+
+| Clause | What it asserts |
+| --- | --- |
+| `OpenPerformsNoRemoteIO` | `Open` on a source whose upstream does not exist returns nil, within a second |
+| `IDIsStable` | the identity every metric series, log line and port claim is keyed on does not move |
+| `ReadyFiresExactlyOnce` | one `ready()` per `Run`, and only once the session is live |
+| `CancellationEndsTheSessionWithNil` | a stop is recorded as a stop, not as a failure |
+| `EventsCarryTheirSourceIdentity` | source, type, timestamp and a body on every event |
+| `MalformedFrameStillProducesAPublishableEvent` | the broker's encoding rule holds for whatever the upstream sends |
+| `PublishFailureDoesNotEndTheSession` | a broker outage does not spend a restart attempt |
+| `SlowPublishBackpressuresRatherThanDrops` | a slow pipeline costs throughput, never events |
+| `CloseReleasesWhatOpenAcquired` | `Open` → `Close` → `Open` on the same address succeeds |
+| `CloseIsSafeWithoutRun` | the admission path that fails between `Open` and `Run` |
+| `NoConnectorGoroutineSurvivesTheSession` | no goroutine of this package outlives a cancelled session |
+| `UpstreamLossEndsAPullSession` | the session ends, with a reason, and the source does not reconnect on its own |
+| `UpstreamLossDoesNotEndAPushSession` | a client going away is not a session failure |
+
+The faults are injected by local fixtures rather than by mocking the connector:
+an in-process upstream per kind, each with the same three levers — deliver one
+well-formed event, deliver one malformed frame, go away mid-session. A
+disconnect is a closed WebSocket for one connector and a handler returning for
+another; the suite asserts the same thing about both because the fixture, not
+the test, knows the difference.
+
+Goroutine accounting counts goroutines whose stack runs through
+`internal/connector` — the ones a connector starts and therefore owns — against
+a baseline taken in the same test. That is narrower than a whole-process count
+and deliberately so: a process-wide count is dominated by idle HTTP connections
+and would be flaky rather than strict. It does not see a goroutine started
+inside `net/http` on the connector's behalf.
+
+**What the suite found.** The gRPC source passed a client's `payload` through as
+`json.RawMessage` without checking it. Every other connector wraps a body that
+is not valid JSON as a JSON string; gRPC did not, and `json.RawMessage` is
+validated when the envelope is marshalled — so a client sending non-JSON made
+*every* publish on that stream fail with a marshalling error raised in the
+broker, and took its own stream down with it. It is fixed to wrap like the
+others.
+
+**The soak run is optional.** `make soak` drives sessions back to back for 30
+seconds per connector — roughly a thousand of them — and ends on the same
+goroutine accounting. It is the accumulation case the single-session tests
+cannot see, and it is skipped unless `NEPHTYS_SOAK` is set, so CI stays
+deterministic and bounded.
+
+## 10. How it is verified
 
 Each of these was checked against the code with the fix removed, one part at a
 time, so the table says what each test actually discriminates rather than what
@@ -415,6 +480,10 @@ it covers.
 | `TestWebhookSource_StuckHandlerDoesNotOutliveTheSession` | escalating a timed-out shutdown to closing connections | the handler goroutine, which nothing can stop |
 | `TestRestore_UnbindableStreamStaysVisible` | restore registering failures | the sort order |
 | `TestRestore_AdmitsInSortedOrder` | the sort, and restore registering failures | — |
+| `TestConformance_MalformedFrameStillProducesAPublishableEvent` | the gRPC payload wrap; it failed on gRPC before the fix and passed on the other four | which of the other connectors wraps and which validates |
+| `TestConformance_UpstreamLossEndsAPullSession` | `close(sessionOver)` in the WebSocket session — reintroducing the leak fails it on the goroutine count | the session-count half, which a retry that still returns would fail instead |
+| `TestConformance_CancellationEndsTheSessionWithNil` | returning `ctx.Err()` from a cancelled session | which connector, unless read from the subtest name |
+| `TestConformance_NoConnectorGoroutineSurvivesTheSession` | a goroutine left parked after cancellation | a leak on the *failure* path — the upstream-loss test is the one that catches those |
 
 Timing is not taken from the wall clock: the supervisor's `now` and `sleep` are
 injected, and the tests replace them, so the reset window and the ladder are
@@ -422,7 +491,7 @@ exercised without waiting for either. The scripted test source parks on its
 context once its script runs out, so a supervisor that restarts more often than
 expected fails on the count rather than spinning.
 
-## 10. Decisions taken and what is left
+## 11. Decisions taken and what is left
 
 **Registration does not block on a pull source's first connect, and will not.**
 A mistyped WebSocket host returns `201` with `state: connecting`, and the first
